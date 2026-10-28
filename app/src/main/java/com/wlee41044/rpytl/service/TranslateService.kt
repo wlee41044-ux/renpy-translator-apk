@@ -56,6 +56,7 @@ class TranslateService : Service() {
 
         fun pause(ctx: Context) {
             JobState.stopRequested.set(true)
+            LocalLlm.cancelActive()
             JobState.log("일시정지 요청 — 현재 배치가 끝나면 멈춥니다")
         }
     }

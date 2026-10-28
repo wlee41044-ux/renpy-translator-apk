@@ -157,6 +157,23 @@ private fun MainScreen(engine: Engine, prefs: Prefs) {
         }
     }
 
+    var copyingModel by remember { mutableStateOf(false) }
+    val pickModel = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        copyingModel = true
+        scope.launch {
+            // llama.cpp 는 파일 경로로 읽으므로 앱 전용 외부 저장소로 한 번 복사한다
+            val path = withContext(Dispatchers.IO) {
+                runCatching { copyModel(ctx, uri) { ui(it) } }.onFailure { ui("모델 복사 실패: ${it.message}") }.getOrNull()
+            }
+            if (path != null) {
+                prefs.modelPath = path
+                ui("모델 지정: $path")
+            }
+            copyingModel = false
+        }
+    }
+
     val pickFont = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         val gid = selected
         if (uri != null && gid != null) {
@@ -328,7 +345,18 @@ private fun MainScreen(engine: Engine, prefs: Prefs) {
             OutlinedButton(onClick = { showSettings = !showSettings }) {
                 Text(if (showSettings) "설정 닫기" else "설정 열기")
             }
-            if (showSettings) SettingsPanel(prefs)
+            if (showSettings) {
+                SettingsPanel(prefs)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "모델: " + (prefs.modelPath.substringAfterLast('/').ifBlank { "없음" }),
+                        Modifier.weight(1f), fontSize = 13.sp,
+                    )
+                    OutlinedButton(enabled = !copyingModel, onClick = { pickModel.launch(arrayOf("*/*")) }) {
+                        Text(if (copyingModel) "복사 중…" else "GGUF 모델 선택")
+                    }
+                }
+            }
 
             OutlinedButton(enabled = !busy, onClick = {
                 scope.launch {
@@ -364,7 +392,10 @@ private fun SettingsPanel(prefs: Prefs) {
         BoolPref("Google 실패 시 로컬 모델로 전환", prefs.fallbackLocal) { prefs.fallbackLocal = it }
         IntPref("로컬: 배치 크기 (발열 시 줄이기)", prefs.localBatch) { prefs.localBatch = it.coerceIn(1, 32) }
         IntPref("로컬: 쓰레드 수 (발열 시 줄이기)", prefs.localThreads) { prefs.localThreads = it.coerceIn(1, 8) }
-        TextPref("로컬: GGUF 모델 파일 경로", prefs.modelPath) { prefs.modelPath = it }
+        IntPref("로컬: 컨텍스트 길이 (메모리 부족 시 줄이기)", prefs.localCtx) { prefs.localCtx = it.coerceIn(512, 32768) }
+        IntPref("로컬: 배치 사이 쉬는 시간 ms (발열 조절)", prefs.localCooldownMs) { prefs.localCooldownMs = it.coerceIn(0, 600000) }
+        BoolPref("로컬: 생각(thinking) 모드 끄기 (Qwen3)", prefs.localNoThink) { prefs.localNoThink = it }
+        TextPref("로컬: GGUF 모델 파일 경로 (아래 버튼으로 선택 권장)", prefs.modelPath) { prefs.modelPath = it }
         BoolPref("언어 강제 (config.language)", prefs.forceLanguage) { prefs.forceLanguage = it }
     }
 }
@@ -396,4 +427,39 @@ private fun BoolPref(label: String, initial: Boolean, save: (Boolean) -> Unit) {
         Checkbox(checked = v, onCheckedChange = { v = it; save(it) })
         Text(label, fontSize = 13.sp)
     }
+}
+
+
+/** SAF 로 고른 GGUF 를 Android/data/<이 앱>/files/models/ 로 복사하고 경로를 돌려준다. */
+private fun copyModel(ctx: android.content.Context, uri: Uri, log: (String) -> Unit): String {
+    val name = ctx.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+        ?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: "model.gguf"
+    require(name.lowercase().endsWith(".gguf")) { "GGUF 파일이 아닙니다: $name" }
+    val dir = java.io.File(ctx.getExternalFilesDir(null) ?: ctx.filesDir, "models").apply { mkdirs() }
+    val dest = java.io.File(dir, name.replace('/', '_'))
+    val tmp = java.io.File(dir, "$name.part")
+    log("모델 복사 시작: $name")
+    ctx.contentResolver.openInputStream(uri)!!.use { input ->
+        tmp.outputStream().use { out ->
+            val buf = ByteArray(1 shl 20)
+            var total = 0L
+            var nextLog = 256L shl 20
+            while (true) {
+                val n = input.read(buf)
+                if (n < 0) break
+                out.write(buf, 0, n)
+                total += n
+                if (total >= nextLog) {
+                    log("  ${total shr 20}MB")
+                    nextLog += 256L shl 20
+                }
+            }
+        }
+    }
+    if (dest.exists()) dest.delete()
+    check(tmp.renameTo(dest)) { "이름 바꾸기 실패" }
+    // 예전에 복사한 다른 모델은 지워서 공간 확보
+    dir.listFiles()?.filter { it != dest }?.forEach { it.delete() }
+    log("모델 복사 완료: ${dest.length() shr 20}MB")
+    return dest.absolutePath
 }

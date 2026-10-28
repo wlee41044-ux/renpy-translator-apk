@@ -2,19 +2,52 @@ package com.wlee41044.rpytl.llm
 
 import android.content.Context
 import com.wlee41044.rpytl.Prefs
+import java.io.File
 
 /**
- * 로컬 LLM(llama.cpp GGUF) 브리지. Python 의 translators.local.LocalTranslator 가
- * generate(prompt, maxTokens) 를 호출한다. 4단계에서 JNI 로 구현.
+ * 로컬 LLM 브리지. Python 의 translators.local.LocalTranslator 가 chat(system, user, maxTokens) 를 호출한다.
  */
 interface LocalLlm : AutoCloseable {
-    fun generate(prompt: String, maxTokens: Int): String
+    fun chat(system: String, user: String, maxTokens: Int): String
+
+    /** 생성 중이면 중단 (일시정지) */
+    fun cancel()
 
     companion object {
-        /** 모델을 로드해서 돌려준다. 아직 미구현이면 null (Python 쪽에서 명확한 오류로 처리). */
+        @Volatile
+        var active: LocalLlm? = null
+            private set
+
+        /** 설정의 모델을 로드. 실패하면 로그를 남기고 null (Python 쪽이 명확한 오류로 처리). */
         fun create(context: Context, prefs: Prefs, log: (String) -> Unit): LocalLlm? {
-            log("로컬 모델 연동은 아직 구현되지 않았습니다 (4단계)")
-            return null
+            val path = prefs.modelPath.trim()
+            if (path.isEmpty()) {
+                log("로컬 모델 파일이 지정되지 않았습니다 (설정 → 모델 파일 선택)")
+                return null
+            }
+            if (!File(path).canRead()) {
+                log("모델 파일을 읽을 수 없습니다: $path")
+                return null
+            }
+            return try {
+                val t0 = System.currentTimeMillis()
+                log("로컬 모델 로드 중: ${File(path).name} (쓰레드 ${prefs.localThreads}, ctx ${prefs.localCtx})")
+                val llm = LlamaLlm.load(path, prefs.localCtx, prefs.localThreads, prefs.localNoThink, prefs.localTemperature)
+                log("로드 완료 (${(System.currentTimeMillis() - t0) / 1000}s)")
+                active = llm
+                llm
+            } catch (t: Throwable) {
+                log("로컬 모델 로드 실패: ${t.message}")
+                null
+            }
+        }
+
+        fun cancelActive() {
+            active?.cancel()
+        }
+
+        internal fun clearActive(llm: LocalLlm) {
+            if (active === llm) active = null
         }
     }
 }

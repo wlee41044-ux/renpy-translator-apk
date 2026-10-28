@@ -199,10 +199,66 @@ def test_untranslatable_copied(tmp_path):
     assert res["files"] == ["tl/korean/rpytl/_language.rpy"]
 
 
-def test_local_stub_errors_cleanly(game):
+def test_local_without_model_errors_cleanly(game):
     dbp, gid = game
     r = json.loads(runner.run(dbp, gid, "local", "{}", Ctl()))
-    assert r["status"] == "error" and "4단계" in r["message"]
+    assert r["status"] == "error" and "로드되지 않았습니다" in r["message"]
+
+
+class FakeLlm:
+    """번호 목록을 받아 각 줄 앞에 KO: 를 붙여 주는 가짜 모델. mode 로 오작동 흉내."""
+
+    def __init__(self, mode="ok"):
+        self.mode, self.calls = mode, []
+
+    def chat(self, system, user, max_tokens):
+        self.calls.append((system, user, max_tokens))
+        lines = user.split("\n")
+        if "numbered list" in system:
+            if self.mode == "merge":
+                return "<think>\n\n</think>\n1. 합쳐버림"
+            return "<think>\n\n</think>\n" + "\n".join(
+                "%s. KO:%s" % (l.split(". ", 1)[0], l.split(". ", 1)[1]) for l in lines)
+        return '"KO1:%s"\n(설명: 이것은 번역입니다)' % user
+
+
+def test_local_batch_numbered(game):
+    dbp, gid = game
+    llm = FakeLlm()
+    r = json.loads(runner.run(dbp, gid, "local", json.dumps({"local": {"max_batch": 4}}), Ctl(),
+                              local_bridge=llm))
+    assert r["status"] == "finished" and r["review"] == 0
+    con = db.connect(dbp)
+    tr = {row["source"]: row["translation"] for row in con.execute("SELECT * FROM texts")}
+    assert tr["Good morning, [player_name]!"] == "KO:Good morning, [player_name]!"
+    assert tr["Hey, it's %(time)s already.\nWe're late!"] == "KO:Hey, it's %(time)s already.\nWe're late!"
+    assert "Korean" in llm.calls[0][0] and "ZQ0Z" in llm.calls[0][0]
+    assert all(c[2] <= 1024 for c in llm.calls)
+
+
+def test_local_falls_back_to_single_lines():
+    from rpytl.translators.local import LocalTranslator
+    llm = FakeLlm(mode="merge")
+    t = LocalTranslator(llm, max_batch=3)
+    out = t.translate_batch(["a", "b"], "en", "ko")
+    # 따옴표와 덧붙인 설명 줄은 제거
+    assert out == ["KO1:a", "KO1:b"]
+    assert len(llm.calls) == 3
+
+
+def test_local_stop_discards_partial():
+    from rpytl.translators.base import Stopped
+    from rpytl.translators.local import LocalTranslator
+    state = {"stop": False}
+
+    class StopDuring(FakeLlm):
+        def chat(self, s, u, m):
+            state["stop"] = True
+            return "partial"
+
+    t = LocalTranslator(StopDuring())
+    with pytest.raises(Stopped):
+        t.translate_batch(["a", "b"], "en", "ko", should_stop=lambda: state["stop"])
 
 
 def test_lang_code():

@@ -13,12 +13,17 @@ android {
         applicationId = "com.wlee41044.rpytl"
         minSdk = 26
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 5
+        versionName = "0.5.0"
 
         ndk {
-            // 갤럭시 S24 = arm64-v8a. x86_64 는 에뮬레이터용.
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            // 갤럭시 S24 = arm64-v8a 만 (llama.cpp 빌드 시간/APK 크기 절약)
+            abiFilters += listOf("arm64-v8a")
+        }
+        externalNativeBuild {
+            cmake {
+                arguments += listOf("-DCMAKE_BUILD_TYPE=Release")
+            }
         }
     }
 
@@ -41,6 +46,15 @@ android {
             isMinifyEnabled = false
             // 개인용: release 도 같은 키로 서명해서 debug 위에 덮어 설치 가능하게.
             signingConfig = signingConfigs.getByName("debug")
+        }
+    }
+
+    // llama.cpp (third_party/llama.cpp 서브모듈) + JNI 래퍼
+    ndkVersion = "27.2.12479018"
+    externalNativeBuild {
+        cmake {
+            path("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
         }
     }
 

@@ -42,6 +42,26 @@ class Prefs(context: Context) {
         get() = sp.getInt("local_threads", 4)
         set(v) = sp.edit().putInt("local_threads", v).apply()
 
+    /** 컨텍스트 길이. 길면 메모리를 많이 쓴다 (4B Q4 + 4096 ≈ 3GB) */
+    var localCtx: Int
+        get() = sp.getInt("local_ctx", 4096)
+        set(v) = sp.edit().putInt("local_ctx", v).apply()
+
+    /** Qwen3 등의 생각(thinking) 모드 끄기 */
+    var localNoThink: Boolean
+        get() = sp.getBoolean("local_no_think", true)
+        set(v) = sp.edit().putBoolean("local_no_think", v).apply()
+
+    /** 0 = 그리디 (일관성 우선) */
+    var localTemperature: Float
+        get() = sp.getFloat("local_temp", 0f)
+        set(v) = sp.edit().putFloat("local_temp", v).apply()
+
+    /** 배치 사이 쉬는 시간 (발열 조절) */
+    var localCooldownMs: Int
+        get() = sp.getInt("local_cooldown_ms", 0)
+        set(v) = sp.edit().putInt("local_cooldown_ms", v).apply()
+
     var modelPath: String
         get() = sp.getString("model_path", "")!!
         set(v) = sp.edit().putString("model_path", v).apply()
@@ -60,6 +80,6 @@ class Prefs(context: Context) {
         put("retry_review", retryReview)
         if (engine == "google" && fallbackLocal) put("fallback", "local")
         put("google", JSONObject().put("delay", googleDelayMs / 1000.0).put("max_batch", googleBatch))
-        put("local", JSONObject().put("max_batch", localBatch))
+        put("local", JSONObject().put("max_batch", localBatch).put("cooldown", localCooldownMs / 1000.0))
     }
 }

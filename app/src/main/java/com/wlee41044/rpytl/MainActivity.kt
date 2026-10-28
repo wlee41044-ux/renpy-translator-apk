@@ -30,6 +30,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
@@ -40,6 +41,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -62,6 +64,7 @@ import androidx.compose.ui.unit.sp
 import com.wlee41044.rpytl.apps.RenpyApps
 import com.wlee41044.rpytl.saf.GameFolder
 import com.wlee41044.rpytl.shizuku.ShizukuFs
+import org.json.JSONObject
 import rikka.shizuku.Shizuku
 import com.wlee41044.rpytl.service.JobState
 import com.wlee41044.rpytl.service.TranslateService
@@ -370,6 +373,49 @@ private fun MainScreen(engine: Engine, prefs: Prefs) {
                         Text(if (copyingModel) "복사 중…" else "GGUF 모델 선택")
                     }
                 }
+            }
+
+            // ---- 번역 지우기 (로컬 모델로 다시 번역하고 싶을 때)
+            var resetCounts by remember(gid) { mutableStateOf<JSONObject?>(null) }
+            OutlinedButton(enabled = !busy && stats.done + stats.review > 0, onClick = {
+                scope.launch {
+                    resetCounts = withContext(Dispatchers.IO) { runCatching { engine.engineCounts(gid) }.getOrNull() }
+                }
+            }) { Text("번역 지우기 (다시 번역)", color = Color(0xFFFFB060)) }
+            resetCounts?.let { counts ->
+                val g = counts.optInt("google")
+                val total = counts.keys().asSequence().sumOf { counts.optInt(it) }
+                fun doReset(engineName: String?) {
+                    resetCounts = null
+                    scope.launch {
+                        val n = withContext(Dispatchers.IO) {
+                            runCatching { engine.resetTranslations(gid, engineName) }
+                                .onFailure { ui("번역 지우기 실패: ${it.message}") }.getOrDefault(0)
+                        }
+                        ui("번역 ${n}줄을 지우고 대기로 되돌림 (지우기 전 DB 백업됨). '번역 시작'으로 다시 번역하세요.")
+                        JobState.dbChanged()
+                    }
+                }
+                AlertDialog(
+                    onDismissRequest = { resetCounts = null },
+                    title = { Text("번역 지우기") },
+                    text = {
+                        Text(
+                            "현재 번역: Google ${g}줄, 전체 ${total}줄.\n" +
+                                "지운 줄은 '대기'로 돌아가 다음 번역에서 다시 번역됩니다. 캐릭터 분석은 유지됩니다.\n" +
+                                "이미 게임에 넣은 번역 파일은 '출력 파일 생성'을 다시 할 때까지 그대로입니다.",
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { doReset("google") }) { Text("Google 번역만 지우기") }
+                    },
+                    dismissButton = {
+                        Row {
+                            TextButton(onClick = { doReset(null) }) { Text("전부 지우기") }
+                            TextButton(onClick = { resetCounts = null }) { Text("취소") }
+                        }
+                    },
+                )
             }
 
             // ---- 캐릭터 분석 보기/수정

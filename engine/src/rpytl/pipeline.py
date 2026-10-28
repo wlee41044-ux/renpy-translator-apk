@@ -206,3 +206,22 @@ def set_profile(db_path, game_id, name, profile):
             db.set_profile(con, game_id, name, profile, auto=0)
     finally:
         con.close()
+
+
+def engine_counts(db_path, game_id):
+    con = open_db(db_path)
+    try:
+        return _j(db.engine_counts(con, game_id))
+    finally:
+        con.close()
+
+
+def reset_translations(db_path, game_id, engine=None):
+    """번역 지우기. 지우기 전에 DB 를 백업한다. 반환: JSON {reset: 줄 수, backup: 경로}"""
+    backup = backup_db(db_path)
+    con = open_db(db_path)
+    try:
+        n = db.reset_translations(con, game_id, engine or None)
+        return _j({"reset": n, "backup": backup})
+    finally:
+        con.close()

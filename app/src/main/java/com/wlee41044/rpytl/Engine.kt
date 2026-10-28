@@ -71,6 +71,13 @@ class Engine(context: Context) {
     fun translate(gameId: Long, engine: String, opts: JSONObject, control: PyControl, localBridge: Any?): JSONObject =
         JSONObject(py.callAttr("translate", dbPath, gameId, engine, opts.toString(), control, localBridge).toString())
 
+    /** 엔진별 번역된 줄 수 {"google": n, "local": n} */
+    fun engineCounts(gameId: Long): JSONObject = JSONObject(py.callAttr("engine_counts", dbPath, gameId).toString())
+
+    /** 번역을 지우고 대기로 되돌린다 (지우기 전에 DB 백업). engine=null 이면 전부. 반환: 되돌린 줄 수 */
+    fun resetTranslations(gameId: Long, engine: String?): Int =
+        JSONObject(py.callAttr("reset_translations", dbPath, gameId, engine).toString()).getInt("reset")
+
     fun analyze(gameId: Long, opts: JSONObject, control: PyControl, localBridge: Any?): JSONObject =
         JSONObject(py.callAttr("analyze", dbPath, gameId, opts.toString(), control, localBridge).toString())
 

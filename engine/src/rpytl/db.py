@@ -323,3 +323,27 @@ def set_profile(con, game_id, name, profile, auto=0, lines=None):
                    ON CONFLICT(game_id, name) DO UPDATE SET profile = excluded.profile, auto = excluded.auto,
                        lines = COALESCE(excluded.lines, profiles.lines), updated_at = excluded.updated_at""",
                 (game_id, name, profile, auto, lines, now()))
+
+
+def reset_translations(con, game_id, engine=None):
+    """번역을 지우고 대기(pending) 로 되돌린다 (원문/위치/캐릭터 분석은 그대로).
+
+    engine 이 주어지면 그 엔진이 번역한 것만 (예: 'google'), None 이면 번역된 것 전부.
+    번역할 게 없어서 그대로 둔 줄('copy')은 지우지 않는다. 검수필요(review)도 함께 되돌린다.
+    반환: 되돌린 줄 수.
+    """
+    q = """UPDATE texts SET status = 'pending', translation = NULL, engine = NULL, note = NULL, updated_at = ?
+           WHERE game_id = ? AND status IN ('done', 'review') AND COALESCE(engine, '') != 'copy'"""
+    args = [now(), game_id]
+    if engine:
+        q += " AND engine = ?"
+        args.append(engine)
+    with tx(con):
+        return con.execute(q, args).rowcount
+
+
+def engine_counts(con, game_id):
+    """엔진별 번역된 줄 수 (확인 창에 보여 주기 위함). {'google': n, 'local': n, ...}"""
+    return {r["engine"] or "?": r["n"] for r in con.execute(
+        """SELECT engine, COUNT(*) AS n FROM texts WHERE game_id = ? AND status IN ('done', 'review')
+           AND COALESCE(engine, '') != 'copy' GROUP BY engine""", (game_id,))}

@@ -651,3 +651,32 @@ def test_sample_lines_spreads_and_truncates():
     out = analyze.sample_lines(lines, k=10, max_chars=10 ** 6, per_line=8)
     assert len(out) == 10 and all(len(x) <= 8 for x in out)
     assert out[0].endswith("台詞の例です、これ"[:8]) or True
+
+
+def test_reset_translations_keeps_copy_lines_and_profiles_and_backs_up(tmp_path):
+    g = tmp_path / "g"
+    g.mkdir()
+    (g / "a.rpy").write_text('label a:\n    a "Hello there."\n    a "[name]"\n    a "Bye now."\n', encoding="utf-8")
+    dbp = str(tmp_path / "t.db")
+    gid = pipeline.add_game(dbp, "T", "u")
+    pipeline.scan_game(dbp, gid, str(g))
+    con = db.connect(dbp)
+    rows = {t["source"]: t for t in db.pending_texts(con, gid, 10)}
+    db.set_translation(con, gid, rows["Hello there."]["src_hash"], "안녕", "google")
+    db.set_translation(con, gid, rows["Bye now."]["src_hash"], "잘 가", "local")
+    db.set_translation(con, gid, rows["[name]"]["src_hash"], "[name]", "copy")
+    db.set_profile(con, gid, "a", "성격 메모", auto=0, lines=3)
+    assert json.loads(pipeline.engine_counts(dbp, gid)) == {"google": 1, "local": 1}
+
+    res = json.loads(pipeline.reset_translations(dbp, gid, "google"))       # Google 것만
+    assert res["reset"] == 1 and os.path.exists(res["backup"])
+    st = db.stats(con, gid)
+    assert (st["done"], st["pending"]) == (2, 1)                            # local + copy 는 그대로
+    res = json.loads(pipeline.reset_translations(dbp, gid, None))           # 전부
+    assert res["reset"] == 1
+    st = db.stats(con, gid)
+    assert (st["done"], st["pending"]) == (1, 2)                            # copy 줄은 남는다
+    assert db.get_profiles(con, gid) == {"a": "성격 메모"}                    # 캐릭터 분석은 유지
+    # 백업에는 지우기 전 번역이 남아 있다
+    old = db.connect(res["backup"])
+    assert db.stats(old, gid)["done"] == 2

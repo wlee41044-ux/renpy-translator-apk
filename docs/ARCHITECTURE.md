@@ -11,10 +11,13 @@ renpy-translator-apk/
 │     └─ llm/                   llama.cpp JNI 브리지                              (4단계)
 ├─ engine/                      순수 Python 엔진 (Chaquopy 소스 + PC pytest)
 │  ├─ src/rpytl/
+│  │  ├─ pipeline.py            Kotlin 이 부르는 진입점 (JSON 문자열 반환)
+│  │  ├─ model.py               Item, Ren'Py 식 say 코드/식별자 계산
 │  │  ├─ rpa.py                 RPA-2.0/3.0/3.2 아카이브 읽기 (스크립트만 추출)
-│  │  ├─ rpyc.py                .rpyc 로드 (안전 언피클러 + 가짜 클래스) → AST
-│  │  ├─ astwalk.py             AST 에서 대사/메뉴/문자열 추출 (Translate 식별자 그대로 사용)
+│  │  ├─ rpyc.py                .rpyc 로드 (안전 언피클러 + 가짜 클래스) → 대사/메뉴/문자열
 │  │  ├─ rpyparse.py            .rpy 텍스트 파서 + Ren'Py 식 번역 식별자 계산
+│  │  ├─ strscan.py             코드 안의 _("...") 문자열
+│  │  ├─ version.py             게임의 Ren'Py 버전 감지 (식별자 규칙이 8.6 에서 바뀜)
 │  │  ├─ protect.py             태그·변수 → 플레이스홀더, 복원/검증
 │  │  ├─ db.py                  SQLite 스키마/쿼리
 │  │  ├─ scan.py                스캔 + diff (신규/변경/삭제 분류, 이력)
@@ -40,6 +43,20 @@ renpy-translator-apk/
 - `.rpy` 만 있으면 Ren'Py 알고리즘(라벨 + md5(code) 앞 8자리, 중복시 `_1`..)으로 계산.
 - 같은 파일 이름의 `.rpy` 와 `.rpyc` 가 둘 다 있으면 `.rpy` 를 쓴다 (요구사항: 있으면 그대로 사용).
 
+## 검증
+
+- `.rpy` 식별자 계산은 Ren'Py 저장소의 샘플 게임(the_question, tutorial)과 그 tl 파일로 대조했다
+  (커밋하지 않음): the_question 70/70, tutorial 803/803 (나머지는 원본에서 삭제된 파일·대사 없는
+  `nvl clear` 블록), 문자열 155/155. 테스트에는 그중 몇 개 식별자 값만 상수로 넣었다.
+- Ren'Py 8.6 부터 `config.tlid_only_considers_say=True` 가 기본 → `voice` 등이 식별자에서 빠진다.
+  `renpy/vc_version.py` 로 버전을 감지하고, 스크립트가 직접 설정한 값이 있으면 그걸 따른다.
+- Ren'Py 는 같은 `old` 문자열 번역이 두 번 있으면 시작 시 예외로 멈춘다 → 출력에서 중복 제거,
+  게임에 이미 있는 tl/<언어> (.rpy 및 아카이브 안 .rpyc) 의 식별자/문자열은 제외.
+- screen 의 `text "..."` 리터럴은 Ren'Py 추출기가 빼먹지만 런타임에 `translate_string` 을 거치므로
+  번역 대상에 포함한다.
+- `.rpyc` 언피클러는 renpy.* 를 전부 동작 없는 가짜 클래스로 만들고, 허용 목록 밖의 함수는 호출하지
+  않는다 (악성 피클 테스트 포함). Ren'Py 8.4+ 의 cslots 피클/`_name` 필드도 처리.
+
 ## DB 스키마 (SQLite, 게임별 `game_id` 로 구분)
 
 ```sql
@@ -47,7 +64,7 @@ games(id PK, name, folder_uri UNIQUE, language DEFAULT 'korean',
       created_at, updated_at, last_scan_at)
 
 -- 원문 해시 → 번역문 (번역 메모리). 같은 원문은 한 번만 번역.
-texts(game_id, src_hash, source, translation, engine,      -- engine: google|local|manual
+texts(game_id, src_hash, source, translation, engine,      -- src_hash = sha1(원문); engine: google|local|manual
       status,                                              -- pending|done|review
       note, updated_at,
       PRIMARY KEY(game_id, src_hash))
@@ -55,11 +72,14 @@ texts(game_id, src_hash, source, translation, engine,      -- engine: google|loc
 -- 스크립트의 각 줄(항목). kind: dialogue|string
 entries(id PK, game_id, kind, ident,                       -- 대사: translate 식별자, 문자열: 원문
         src_hash, speaker, file, line, label, seq,
+        tmpl,                                              -- tl 블록 재구성용 JSON (voice 줄, 화자/속성, with 절)
         active,                                            -- 0 이면 '미사용'(삭제된 줄, 번역은 보존)
         first_scan, last_scan,
         UNIQUE(game_id, kind, ident))
 
--- 변경 이력: 원문이 바뀐 줄의 전/후 원문과 번역
+-- 변경 이력: 원문이 바뀐 줄의 전/후 원문과 번역.
+-- '변경' 판정: 같은 식별자인데 원문이 다름(id 절) 또는 같은 파일 안에서 이전/새 순서를 정렬했을 때
+-- 같은 자리에 들어온 항목 (difflib 'replace' 구간).
 history(id PK, game_id, kind, old_ident, new_ident, old_hash, new_hash,
         old_source, new_source, old_translation, changed_at)
 

@@ -12,7 +12,7 @@ Ren'Py 게임 폴더를 폰에서 직접 스캔해 `game/tl/<언어>/` 번역 �
 ## 진행 상황
 
 - [x] 1단계: 뼈대 + GitHub Actions 빌드
-- [ ] 2단계: Python 엔진 (추출 → 파싱 → 태그 보호 → DB → diff → tl 생성) + pytest
+- [x] 2단계: Python 엔진 (추출 → 파싱 → 태그 보호 → DB → diff → tl 생성) + pytest
 - [ ] 3단계: Google 번역 + 번역 큐/이어하기 + Compose UI + Foreground Service
 - [ ] 4단계: 로컬 모델 (llama.cpp GGUF)
 

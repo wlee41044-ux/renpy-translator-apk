@@ -131,3 +131,28 @@ def review_list(db_path, game_id, limit=200):
 def translate(db_path, game_id, engine, opts_json, control, local_bridge=None):
     from . import runner
     return runner.run(db_path, game_id, engine, opts_json, control, local_bridge)
+
+
+def backup_db(db_path, keep=3):
+    """작업 시작 전 번역 기록 DB 를 backup/ 에 복사 (sqlite backup API: WAL 이 있어도 일관됨).
+    최근 keep 개만 남긴다. 반환: 백업 파일 경로 또는 빈 문자열."""
+    import sqlite3
+    import time
+    if not os.path.exists(db_path):
+        return ""
+    bdir = os.path.join(os.path.dirname(db_path), "backup")
+    os.makedirs(bdir, exist_ok=True)
+    dest = os.path.join(bdir, "rpytl-%s.db" % time.strftime("%Y%m%d-%H%M%S"))
+    src = sqlite3.connect(db_path, timeout=30)
+    try:
+        dst = sqlite3.connect(dest)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    olds = sorted(f for f in os.listdir(bdir) if f.startswith("rpytl-") and f.endswith(".db"))
+    for f in olds[:-keep]:
+        os.remove(os.path.join(bdir, f))
+    return dest

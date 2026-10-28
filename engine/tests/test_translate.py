@@ -402,3 +402,49 @@ def test_runner_fetches_workers_times_batch(game, monkeypatch):
         opener=net, sleeper=lambda s, st: None, delay=0, max_batch=2, workers=3))
     runner.run(dbp, gid, "google", "{}", Ctl())
     assert seen[0] == 6   # max_batch(2) * workers(3)
+
+
+# ---------------------------------------------------------------- 413 (요청 주소가 너무 김)
+
+def test_chunks_limited_by_encoded_length():
+    g = _par(FakeNet(), workers=1, max_batch=100, max_encoded=300)
+    korean = ["가나다라마바사아자차" * 3] * 6      # 글자당 9바이트 → 줄당 약 270바이트
+    chunks = list(g._chunks(korean))
+    assert all(len(c) == 1 for c in chunks)       # 인코딩 후 300 을 넘으니 한 줄씩
+
+
+def test_413_splits_chunk_in_half_and_succeeds():
+    seen = []
+
+    def net(url):
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["q"][0]
+        seen.append(len(q.split("\n")))
+        if len(q.split("\n")) > 3:
+            return 413, "<!DOCTYPE html><html><title>Error 413 (Request Entity Too Large)!!1</title>"
+        return 200, gtx_body("\n".join("KO(" + x + ")" for x in q.split("\n")))
+
+    g, _ = make(net, max_batch=100, max_chars=10 ** 6, max_encoded=10 ** 6)
+    texts = ["t%d" % i for i in range(8)]
+    assert g.translate_batch(texts, "en", "ko") == ["KO(%s)" % t for t in texts]
+    assert seen[0] == 8 and max(seen[1:]) <= 4
+
+
+def test_single_unsplittable_line_gives_short_error():
+    big = "<html><title>Error 413 (Request Entity Too Large)!!1</title></html>"
+    g, _ = make(FakeNet(responses=[(413, big)]))
+    with pytest.raises(TranslatorError) as e:
+        g.translate_batch(["x"], "en", "ko")
+    assert "<html" not in str(e.value)
+
+
+def test_very_long_single_line_is_split_by_sentence():
+    def net(url):
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["q"][0]
+        if len(urllib.parse.quote(q)) > 400:
+            return 413, "<title>Error 413</title>"
+        return 200, gtx_body("KO(" + q + ")")
+
+    g, _ = make(net, max_encoded=400)
+    long_line = " ".join("Sentence number %d is here." % i for i in range(30))
+    out = g.translate_batch([long_line], "en", "ko")
+    assert len(out) == 1 and out[0].count("KO(") > 1

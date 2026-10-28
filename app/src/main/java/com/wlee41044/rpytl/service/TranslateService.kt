@@ -148,6 +148,7 @@ class TranslateService : Service() {
     private fun runJob(action: String, gameId: Long, retryReview: Boolean) {
         val game = gameInfo(gameId)
         JobState.setRunning(JobState.Running(gameId, action))
+        if (action != ACTION_EXPORT) engine.backup()   // 번역 기록 보호 (최근 3개 보관)
         acquireWakeLock()
         try {
             when (action) {

@@ -21,21 +21,34 @@ URL = "https://translate.googleapis.com/translate_a/single"
 UA = ("Mozilla/5.0 (Linux; Android 14; SM-S921N) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36")
 
+class PayloadTooLarge(TranslatorError):
+    """HTTP 413/414: 요청 주소가 너무 길다. 호출자가 청크를 쪼개서 다시 보낸다."""
+
+
 GROW_AFTER = 40  # 연속 성공 요청 수: 이만큼 지나면 동시 요청 수를 하나 되돌린다
+
+
+def _short(body):
+    """오류 응답이 HTML 통째로 로그에 쏟아지지 않게 제목만 뽑는다."""
+    import re
+    m = re.search(r"<title>(.*?)</title>", body, re.S | re.I)
+    return (m.group(1) if m else body)[:120].strip()
 
 
 class GoogleTranslator(Translator):
     name = "google"
     OPTIONS = ("delay", "max_retries", "timeout", "max_chars", "max_batch", "backoff_base",
-               "backoff_max", "workers")
+               "backoff_max", "workers", "max_encoded")
 
     def __init__(self, delay=0.5, max_retries=5, timeout=20, max_chars=1800, max_batch=25,
-                 backoff_base=30.0, backoff_max=600.0, workers=3, opener=None,
+                 backoff_base=30.0, backoff_max=600.0, workers=3, max_encoded=4500, opener=None,
                  clock=time.monotonic, sleeper=None):
         self.delay = float(delay)          # 요청 시작 사이 전체 공통 최소 간격(초)
         self.max_retries = int(max_retries)
         self.timeout = float(timeout)
-        self.max_chars = int(max_chars)    # 한 요청의 원문 글자 수 (URL 길이 제한 대비)
+        self.max_chars = int(max_chars)    # 한 요청의 원문 글자 수
+        # 한 요청의 URL 인코딩 후 길이. 한글/일본어는 글자당 9바이트로 늘어나 글자 수만으로는 부족하다.
+        self.max_encoded = int(max_encoded)
         self.max_batch = int(max_batch)    # 한 요청의 줄 수
         self.backoff_base = float(backoff_base)
         self.backoff_max = float(backoff_max)
@@ -121,14 +134,16 @@ class GoogleTranslator(Translator):
             if attempt > self.max_retries:
                 if limited:
                     raise RateLimited("google rate limited (HTTP %s)" % status)
-                raise TranslatorError("google failed: HTTP %s %s" % (status, body[:200]))
+                raise TranslatorError("google failed: HTTP %s %s" % (status, _short(body)))
             if limited:
                 wait = min(self.backoff_max, self.backoff_base * (2 ** (attempt - 1)))
                 self.log("Google 요청 제한(HTTP %s). %d초 쉬고 재시도 (%d/%d)"
                          % (status, wait, attempt, self.max_retries))
                 self._on_limited(wait)   # 다음 _gate 에서 모든 워커가 같이 쉰다
+            elif status in (413, 414):
+                raise PayloadTooLarge("google HTTP %s (요청이 너무 김)" % status)
             elif status is not None and 400 <= status < 500:
-                raise TranslatorError("google HTTP %s: %s" % (status, body[:200]))
+                raise TranslatorError("google HTTP %s: %s" % (status, _short(body)))
             else:
                 wait = min(60.0, 2.0 * (2 ** (attempt - 1)))
                 self.log("Google 오류(%s). %d초 후 재시도 (%d/%d)"
@@ -149,10 +164,35 @@ class GoogleTranslator(Translator):
     def translate_one(self, text, sl, tl, should_stop=lambda: False):
         return self._request(text, sl, tl, should_stop)
 
+    def _translate_long(self, text, sl, tl, should_stop):
+        """한 줄 자체가 너무 길 때: 문장 부호/공백 단위로 쪼개 따로 번역해서 이어 붙인다."""
+        import re
+        pieces, cur = [], ""
+        for part in re.split(r"(?<=[.!?。！？…、,\s])", text):
+            if cur and len(urllib.parse.quote(cur + part)) > self.max_encoded // 2:
+                pieces.append(cur)
+                cur = ""
+            cur += part
+        if cur:
+            pieces.append(cur)
+        if len(pieces) <= 1:
+            raise TranslatorError("한 줄이 너무 길어 보낼 수 없음 (%d자)" % len(text))
+        self.log("한 줄이 너무 길어 %d조각으로 나눠 번역" % len(pieces))
+        return "".join(self._request(p, sl, tl, should_stop) for p in pieces)
+
     def _translate_chunk(self, chunk, sl, tl, should_stop):
         if len(chunk) == 1:
-            return [self._request(chunk[0], sl, tl, should_stop)]
-        joined = self._request("\n".join(chunk), sl, tl, should_stop)
+            try:
+                return [self._request(chunk[0], sl, tl, should_stop)]
+            except PayloadTooLarge:
+                return [self._translate_long(chunk[0], sl, tl, should_stop)]
+        try:
+            joined = self._request("\n".join(chunk), sl, tl, should_stop)
+        except PayloadTooLarge:
+            mid = len(chunk) // 2
+            self.log("요청이 너무 커서 %d줄을 반으로 나눠 재시도" % len(chunk))
+            return (self._translate_chunk(chunk[:mid], sl, tl, should_stop)
+                    + self._translate_chunk(chunk[mid:], sl, tl, should_stop))
         parts = joined.split("\n")
         if len(parts) == len(chunk):
             return [p.strip() for p in parts]
@@ -193,13 +233,16 @@ class GoogleTranslator(Translator):
         return out
 
     def _chunks(self, texts):
-        chunk, size = [], 0
+        chunk, size, enc = [], 0, 0
         for t in texts:
             t = t.replace("\n", " ")
-            if chunk and (size + len(t) + 1 > self.max_chars or len(chunk) >= self.max_batch):
+            e = len(urllib.parse.quote(t)) + 3   # 줄 구분 %0A
+            if chunk and (size + len(t) + 1 > self.max_chars or enc + e > self.max_encoded
+                          or len(chunk) >= self.max_batch):
                 yield chunk
-                chunk, size = [], 0
+                chunk, size, enc = [], 0, 0
             chunk.append(t)
             size += len(t) + 1
+            enc += e
         if chunk:
             yield chunk

@@ -20,6 +20,9 @@ class Engine(context: Context) {
     fun addGame(name: String, folderUri: String, language: String): Long =
         py.callAttr("add_game", dbPath, name, folderUri, language).toLong()
 
+    /** 번역 기록 DB 백업 (작업 시작 전). 실패해도 작업은 계속한다. */
+    fun backup(): String = runCatching { py.callAttr("backup_db", dbPath).toString() }.getOrDefault("")
+
     fun listGames(): List<GameInfo> {
         val arr = JSONArray(py.callAttr("list_games", dbPath).toString())
         return (0 until arr.length()).map { GameInfo.from(arr.getJSONObject(it)) }

@@ -200,3 +200,20 @@ def test_existing_tl_from_rpyc(tmp_path):
     (d / "a.rpyc").write_bytes(f.make_rpyc(stmts))
     ids, strs = tlgen.scan_existing_tl(str(d), "korean")
     assert ids == {"start_11111111"} and strs == {"Start"}
+
+
+def test_backup_db_keeps_records_and_rotates(tmp_path):
+    dbp, gid, game = _setup(tmp_path)
+    pipeline.scan_game(dbp, gid, game)
+    con = db.connect(dbp)
+    _translate_all(con, gid)
+    import time
+    paths = []
+    for _ in range(5):
+        paths.append(pipeline.backup_db(dbp, keep=3))
+        time.sleep(1.1)
+    left = sorted(os.listdir(os.path.join(os.path.dirname(dbp), "backup")))
+    assert len(left) == 3
+    con2 = db.connect(os.path.join(os.path.dirname(dbp), "backup", left[-1]))
+    assert db.stats(con2, gid)["done"] == 17
+    assert pipeline.backup_db(str(tmp_path / "none.db")) == ""

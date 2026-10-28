@@ -162,3 +162,11 @@ def backup_db(db_path, keep=3):
     for f in olds[:-keep]:
         os.remove(os.path.join(bdir, f))
     return dest
+
+
+def review_summary(db_path, game_id):
+    con = open_db(db_path)
+    try:
+        return _j(db.review_summary(con, game_id))
+    finally:
+        con.close()

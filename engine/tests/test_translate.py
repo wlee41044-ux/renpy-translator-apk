@@ -355,15 +355,15 @@ def test_rate_limit_shrinks_workers_and_recovers():
         sleeps.append(s)
         t[0] += s
 
-    g = GoogleTranslator(opener=net, sleeper=sleeper, clock=lambda: t[0], delay=0, workers=3,
+    g = GoogleTranslator(opener=net, sleeper=sleeper, clock=lambda: t[0], delay=0.1, workers=3,
                          max_batch=1, backoff_base=5)
     assert g.parallel == 3
     g.translate_batch(["a"], "en", "ko")      # 429 한 번 → 5초 쉬고 성공
     assert sleeps == [5] and g.parallel == 2
     from rpytl.translators.google import GROW_AFTER
-    for _ in range(GROW_AFTER):
+    for _ in range(GROW_AFTER * 10):          # 간격이 기본값으로 돌아온 뒤 동시 요청 수가 복구된다
         g._request("a", "en", "ko", lambda: False)
-    assert g.parallel == 3
+    assert g.parallel == 3 and g._interval == 0.1
 
 
 def test_parallel_failure_aborts_others_and_raises_real_error():
@@ -521,3 +521,47 @@ def test_413_on_post_lowers_the_limit():
     seen.clear()
     g.translate_batch(texts, "ja", "ko")
     assert max(seen) <= 400 and len(seen) >= 2
+
+
+# ---------------------------------------------------------------- 429 적응 (AIMD)
+
+def test_limit_episode_is_counted_once_across_workers_and_slows_down():
+    t = [0.0]
+    g = GoogleTranslator(opener=lambda u: (200, "[]"), sleeper=lambda s, st: None, clock=lambda: t[0],
+                         delay=0.5, workers=4, backoff_base=30)
+    w1 = g._on_limited()
+    w2 = g._on_limited()       # 같은 사건: 워커 4개가 동시에 제한을 받아도 한 번만 센다
+    w3 = g._on_limited()
+    assert w1 == 30 and 29 <= w2 <= 30 and g._level == 1
+    assert g._interval == 1.0 and g.parallel == 3          # 간격 2배, 동시 1개 감소
+    t[0] = 31
+    assert g._on_limited() == 60 and g._level == 2          # 쉬고 나서 또 맞으면 다음 단계
+    assert g._interval == 2.0 and g.parallel == 2
+
+
+def test_recovers_gradually_after_stable_requests():
+    from rpytl.translators.google import GROW_AFTER
+    t = [0.0]
+    g = GoogleTranslator(opener=lambda u: (200, gtx_body("x")), sleeper=lambda s, st: None,
+                         clock=lambda: t[0], delay=0.5, workers=3, backoff_base=30)
+    g._on_limited()
+    assert (g._level, g._interval, g.parallel) == (1, 1.0, 2)
+    for _ in range(GROW_AFTER):
+        g._on_success()
+    assert g._level == 0 and abs(g._interval - 0.8) < 1e-9     # 간격이 조금씩 줄고
+    for _ in range(GROW_AFTER * 3):
+        g._on_success()
+    assert g._interval == 0.5 and g.parallel == 2               # 기본 간격으로 돌아온 뒤
+    for _ in range(GROW_AFTER):
+        g._on_success()
+    assert g.parallel == 3                                      # 동시 요청 수를 복구
+
+
+def test_review_summary_groups_by_reason(game, monkeypatch):
+    dbp, gid = game
+    net = FakeNet(fn=lambda s: "깨짐" if "ZQ" in s else "ok:" + s)       # 플레이스홀더가 있는 줄은 전부 망가짐
+    _patch_google(monkeypatch, net)
+    runner.run(dbp, gid, "google", "{}", Ctl())
+    res = json.loads(pipeline.review_summary(dbp, gid))
+    assert res[0]["count"] == 4 and "표시가 사라지거나" in res[0]["name"]
+    assert len(res[0]["samples"]) == 3 and "ZQ" not in res[0]["samples"][0]["source"]

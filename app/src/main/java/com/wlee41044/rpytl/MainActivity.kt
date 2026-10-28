@@ -300,11 +300,16 @@ private fun MainScreen(engine: Engine, prefs: Prefs) {
                 }) { Text("검수필요 재번역") }
                 OutlinedButton(enabled = stats.review > 0, onClick = {
                     scope.launch {
-                        val arr = withContext(Dispatchers.IO) { engine.reviewList(gid) }
-                        ui("— 검수필요 ${arr.length()}개 (최대 200) —")
-                        for (i in 0 until arr.length()) {
-                            val o = arr.getJSONObject(i)
-                            ui("원문: ${o.optString("source")}\n번역: ${o.optString("translation")}\n사유: ${o.optString("note")}")
+                        val cats = withContext(Dispatchers.IO) { engine.reviewSummary(gid) }
+                        ui("— 검수필요 사유별 —")
+                        for (i in 0 until cats.length()) {
+                            val c = cats.getJSONObject(i)
+                            ui("● ${c.getString("name")}: ${c.getInt("count")}줄")
+                            val samples = c.getJSONArray("samples")
+                            for (j in 0 until samples.length()) {
+                                val o = samples.getJSONObject(j)
+                                ui("  원문: ${o.optString("source")}\n  번역: ${o.optString("translation")}")
+                            }
                         }
                     }
                 }) { Text("검수필요 보기") }

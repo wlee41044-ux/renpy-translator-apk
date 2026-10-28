@@ -71,6 +71,8 @@ class Engine(context: Context) {
     fun translate(gameId: Long, engine: String, opts: JSONObject, control: PyControl, localBridge: Any?): JSONObject =
         JSONObject(py.callAttr("translate", dbPath, gameId, engine, opts.toString(), control, localBridge).toString())
 
+    fun reviewSummary(gameId: Long): JSONArray = JSONArray(py.callAttr("review_summary", dbPath, gameId).toString())
+
     fun reviewList(gameId: Long): JSONArray = JSONArray(py.callAttr("review_list", dbPath, gameId, 200).toString())
 }
 

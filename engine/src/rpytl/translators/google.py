@@ -48,8 +48,8 @@ class GoogleTranslator(Translator):
     OPTIONS = ("delay", "max_retries", "timeout", "max_chars", "max_batch", "backoff_base",
                "backoff_max", "workers", "max_encoded", "use_post")
 
-    def __init__(self, delay=0.3, max_retries=5, timeout=20, max_chars=3000, max_batch=40,
-                 backoff_base=30.0, backoff_max=600.0, workers=4, max_encoded=6000, use_post=True,
+    def __init__(self, delay=0.5, max_retries=6, timeout=20, max_chars=3000, max_batch=40,
+                 backoff_base=30.0, backoff_max=600.0, workers=3, max_encoded=6000, use_post=True,
                  opener=None, post_opener=None, clock=time.monotonic, sleeper=None):
         self.delay = float(delay)          # 요청 시작 사이 전체 공통 최소 간격(초)
         self.max_retries = int(max_retries)
@@ -71,6 +71,8 @@ class GoogleTranslator(Translator):
         self._next_start = 0.0
         self._pause_until = 0.0
         self._streak = 0
+        self._interval = self.delay        # 현재 요청 시작 간격: 제한을 맞으면 늘리고, 안정되면 기본값까지 줄인다
+        self._level = 0                    # 연속 제한 사건 수준 (대기 시간 = backoff_base * 2^(level-1))
         self._abort = False
         self._rep = {"req": 0, "lat": 0.0, "gate": 0.0, "post": 0}
         self.log = lambda msg: None
@@ -101,27 +103,42 @@ class GoogleTranslator(Translator):
         with self._lock:
             now = self._clock()
             start = max(now, self._next_start, self._pause_until)
-            self._next_start = start + self.delay
+            self._next_start = start + self._interval
             wait = start - now
             self._rep["gate"] += max(0.0, wait)
         if wait > 0:
             self._sleep(wait, should_stop)
 
-    def _on_limited(self, wait):
+    def _on_limited(self):
+        """429/차단을 만났다. 같은 사건(이미 쉬는 중)은 한 번만 센다 — 워커 4개가 각자 대기를 늘리고
+        쉬는 시간이 끝나면 동시에 몰려서 또 제한에 걸리는 것을 막는다. 반환: 쉴 시간(초)."""
         with self._lock:
-            self._pause_until = max(self._pause_until, self._clock() + wait)
+            now = self._clock()
             self._streak = 0
-            if self._workers > 1:
-                self._workers -= 1
-                self.log("요청 제한 감지 — 동시 요청 수를 %d 로 줄임" % self._workers)
+            if now >= self._pause_until:      # 새로운 제한 사건
+                self._level += 1
+                wait = min(self.backoff_max, self.backoff_base * (2 ** (self._level - 1)))
+                self._pause_until = now + wait
+                # 앞으로는 더 천천히: 요청 시작 간격을 두 배로 (최대 5초), 동시 요청도 하나 줄임
+                self._interval = min(5.0, max(self._interval * 2, 0.5))
+                if self._workers > 1:
+                    self._workers -= 1
+                self.log("요청 제한 감지 — %d초 쉬고, 이후 간격 %.1fs · 동시 %d 로 늦춤"
+                         % (wait, self._interval, self._workers))
+                return wait
+            return self._pause_until - now
 
     def _on_success(self):
         with self._lock:
             self._streak += 1
-            if self._streak >= GROW_AFTER and self._workers < self.max_workers:
-                self._workers += 1
+            if self._streak >= GROW_AFTER:
                 self._streak = 0
-                self.log("안정적 — 동시 요청 수를 %d 로 복구" % self._workers)
+                self._level = max(0, self._level - 1)
+                if self._interval > self.delay:
+                    self._interval = max(self.delay, self._interval * 0.8)
+                elif self._workers < self.max_workers:
+                    self._workers += 1
+                    self.log("안정적 — 동시 요청 수를 %d 로 복구" % self._workers)
 
     # ------------------------------------------------------------------ HTTP
 
@@ -207,10 +224,7 @@ class GoogleTranslator(Translator):
             if attempt > self.max_retries and limited:
                 raise RateLimited("google rate limited (HTTP %s)" % status)
             if limited:
-                wait = min(self.backoff_max, self.backoff_base * (2 ** (attempt - 1)))
-                self.log("Google 요청 제한(HTTP %s). %d초 쉬고 재시도 (%d/%d)"
-                         % (status, wait, attempt, self.max_retries))
-                self._on_limited(wait)   # 다음 _gate 에서 모든 워커가 같이 쉰다
+                self._on_limited()   # 다음 _gate 에서 모든 워커가 같이 쉰다 (대기 시간은 공통)
             elif status in (413, 414):
                 raise PayloadTooLarge("google HTTP %s (요청이 너무 김, %d자)" % (status, len(text)))
             elif status is not None and 400 <= status < 500:

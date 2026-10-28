@@ -188,6 +188,31 @@ def reset_status(con, game_id, from_status, to_status=PENDING):
                 (to_status, now(), game_id, from_status))
 
 
+def review_summary(con, game_id, samples=3):
+    """검수필요를 사유별로 묶어 개수와 예시를 돌려준다."""
+    cats = {}
+    for r in con.execute("""SELECT source, translation, note FROM texts
+                            WHERE game_id = ? AND status = 'review' ORDER BY rowid""", (game_id,)):
+        note = r["note"] or ""
+        if note.startswith("placeholders mismatch"):
+            name = "번역 중 태그/변수 표시가 사라지거나 바뀜"
+        elif note.startswith("unknown placeholder"):
+            name = "번역 중 태그/변수 표시가 바뀜"
+        elif note.startswith("태그/변수 구조"):
+            name = "복원 후 태그/변수가 원문과 다름 (게임이 멈출 수 있어 제외)"
+        elif note.startswith("괄호"):
+            name = "괄호 개수가 원문과 다름 (게임이 멈출 수 있어 제외)"
+        elif "empty" in note:
+            name = "번역 결과가 비어 있음"
+        else:
+            name = note[:40] or "기타"
+        c = cats.setdefault(name, {"name": name, "count": 0, "samples": []})
+        c["count"] += 1
+        if len(c["samples"]) < samples:
+            c["samples"].append({"source": r["source"], "translation": r["translation"], "note": note})
+    return sorted(cats.values(), key=lambda c: -c["count"])
+
+
 def revalidate(con, game_id, check):
     """완료(done) 번역 중 check(source, translation) 이 문제 사유를 돌려주는 것을 검수필요로 돌린다.
     반환: 바뀐 줄 수. 이미 저장된 번역을 다시 번역하지 않고 안전하게 걸러내는 용도."""

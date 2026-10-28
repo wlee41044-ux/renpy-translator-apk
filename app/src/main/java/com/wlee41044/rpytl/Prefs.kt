@@ -77,6 +77,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("force_language", true)
         set(v) = sp.edit().putBoolean("force_language", v).apply()
 
+    /** fallback = 한글만 한글 폰트로 그리고 영문은 게임 폰트 유지 (기본), replace = 주요 스타일 폰트를 통째로 교체 */
+    var fontMode: String
+        get() = sp.getString("font_mode", "fallback")!!
+        set(v) = sp.edit().putString("font_mode", v).apply()
+
     fun fontUri(gameId: Long): String? = sp.getString("font_$gameId", null)
     fun setFontUri(gameId: Long, uri: String?) = sp.edit().putString("font_$gameId", uri).apply()
 

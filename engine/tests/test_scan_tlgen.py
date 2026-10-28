@@ -124,7 +124,12 @@ def test_generate_tl_files(tmp_path):
 
     lang = (out / "tl/korean/rpytl/_language.rpy").read_text(encoding="utf-8")
     assert "config.default_language = 'korean'" in lang
-    assert 'translate korean style default:\n    font "tl/korean/rpytl/font.ttf"' in lang
+    assert "_rpytl_font_path = 'tl/korean/rpytl/font.ttf'" in lang      # 기본: 한글만 한글 폰트
+    assert "translate korean style" not in lang
+    res2 = json.loads(pipeline.export(dbp, gid, str(tmp_path / "out2"), font="tl/korean/rpytl/font.ttf",
+                                      font_mode="replace"))
+    lang2 = (tmp_path / "out2" / "tl/korean/rpytl/_language.rpy").read_text(encoding="utf-8")
+    assert 'translate korean style default:\n    font "tl/korean/rpytl/font.ttf"' in lang2
 
     # 생성 파일은 실제 Ren'Py 문법으로 다시 읽혀야 한다: 우리 파서로 들여쓰기/문자열이 깨지지 않았는지
     from rpytl.rpyparse import logical_lines

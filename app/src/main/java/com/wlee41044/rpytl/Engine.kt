@@ -56,10 +56,13 @@ class Engine(context: Context) {
     fun scan(gameId: Long, renpyVersionText: String?): JSONObject =
         JSONObject(py.callAttr("scan_game", dbPath, gameId, workDir(gameId).absolutePath, renpyVersionText).toString())
 
-    fun export(gameId: Long, font: String?, forceLanguage: Boolean, existingTlDir: String?): JSONObject =
+    fun export(
+        gameId: Long, font: String?, forceLanguage: Boolean, existingTlDir: String?, fontMode: String,
+    ): JSONObject =
         JSONObject(
-            py.callAttr("export", dbPath, gameId, outDir(gameId).absolutePath, font, forceLanguage, existingTlDir)
-                .toString()
+            py.callAttr(
+                "export", dbPath, gameId, outDir(gameId).absolutePath, font, forceLanguage, existingTlDir, fontMode,
+            ).toString()
         )
 
     fun translate(gameId: Long, engine: String, opts: JSONObject, control: PyControl, localBridge: Any?): JSONObject =

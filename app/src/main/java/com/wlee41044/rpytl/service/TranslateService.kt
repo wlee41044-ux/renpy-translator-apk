@@ -225,31 +225,50 @@ class TranslateService : Service() {
             return
         }
         val folder = GameFolder(contentResolver, Uri.parse(location))
-        val fontUri = prefs.fontUri(gameId)
+        val font = prepareFont(gameId)
         var fontName: String? = null
-        if (fontUri != null) {
-            val display = runCatching {
-                contentResolver.query(Uri.parse(fontUri), arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
-                    ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
-            }.getOrNull() ?: ""
-            val ext = if (display.lowercase().endsWith(".otf")) "otf" else "ttf"
-            val fname = "font.$ext"
+        if (font != null) {
             try {
-                folder.writeFont(language, fname, Uri.parse(fontUri))
-                fontName = fname
-                JobState.log("폰트 복사: tl/$language/rpytl/$fname")
+                folder.writeFontFile(language, font.name, font)
+                fontName = font.name
+                JobState.log("폰트 복사: tl/$language/rpytl/${font.name}")
             } catch (e: Exception) {
                 JobState.log("폰트 복사 실패: ${e.message}")
             }
         }
         val existingTl = java.io.File(engine.workDir(gameId), "tl/$language").absolutePath
-        val r = engine.export(gameId, fontName?.let { "tl/$language/rpytl/$it" }, prefs.forceLanguage, existingTl)
+        val r = engine.export(gameId, fontName?.let { "tl/$language/rpytl/$it" }, prefs.forceLanguage, existingTl, prefs.fontMode)
         val info = r.getJSONObject("info")
         val n = folder.writeOutput(engine.outDir(gameId), r, fontName) { JobState.log(it) }
         JobState.log(
             "출력 완료: 파일 $n 개 → game/tl/$language/rpytl/ (대사 파일 ${info.getInt("dialogue_files")}개, " +
                 "문자열 ${info.getInt("strings")}개, 기존 번역과 겹쳐 제외 ${info.getInt("skipped_existing")}개)"
         )
+    }
+
+    /**
+     * 게임에 넣을 폰트 파일을 캐시 폴더에 준비한다.
+     * 사용자가 고른 폰트가 있으면 그것, 없으면 앱에 포함된 나눔고딕 (SIL OFL).
+     */
+    private fun prepareFont(gameId: Long): java.io.File? {
+        val dir = java.io.File(cacheDir, "font").apply { mkdirs() }
+        dir.listFiles()?.forEach { it.delete() }
+        val uri = prefs.fontUri(gameId)
+        return try {
+            if (uri != null) {
+                val out = java.io.File(dir, "font.${fontExt(uri)}")
+                contentResolver.openInputStream(Uri.parse(uri))!!.use { i -> out.outputStream().use { i.copyTo(it) } }
+                out
+            } else {
+                val out = java.io.File(dir, "font.ttf")
+                assets.open("fonts/NanumGothic-Regular.ttf").use { i -> out.outputStream().use { i.copyTo(it) } }
+                JobState.log("폰트: 앱에 포함된 나눔고딕 사용 (한글만 이 폰트로 표시, 영문은 게임 폰트 그대로)")
+                out
+            }
+        } catch (e: Exception) {
+            JobState.log("폰트 준비 실패: ${e.message}")
+            null
+        }
     }
 
     private fun fontExt(fontUri: String): String {
@@ -266,12 +285,12 @@ class TranslateService : Service() {
             JobState.log("출력 실패: ${st.label}. Shizuku 를 켜고 앱에서 권한을 허용한 뒤 다시 시도하세요.")
             return
         }
-        val fontUri = prefs.fontUri(gameId)
-        val fontName = fontUri?.let { "font.${fontExt(it)}" }
+        val font = prepareFont(gameId)
+        val fontName = font?.name
         val existingTl = java.io.File(engine.workDir(gameId), "tl/$language").absolutePath
-        val r = engine.export(gameId, fontName?.let { "tl/$language/rpytl/$it" }, prefs.forceLanguage, existingTl)
+        val r = engine.export(gameId, fontName?.let { "tl/$language/rpytl/$it" }, prefs.forceLanguage, existingTl, prefs.fontMode)
         val info = r.getJSONObject("info")
-        val n = AppGame(this, pkg).writeOutput(engine.outDir(gameId), r, fontUri?.let { Uri.parse(it) }, fontName) {
+        val n = AppGame(this, pkg).writeOutput(engine.outDir(gameId), r, font, fontName) {
             JobState.log(it)
         }
         JobState.log(

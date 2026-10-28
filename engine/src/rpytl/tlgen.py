@@ -94,7 +94,7 @@ def _say_line(tmpl, text):
 
 
 def generate(con, game_id, out_dir, language=None, font=None, force_language=True,
-             existing_tl_dir=None):
+             existing_tl_dir=None, font_mode="fallback"):
     """out_dir 에 tl/<lang>/rpytl/*.rpy 생성. 반환: (game/ 기준 상대경로 목록, 통계)"""
     game = db.get_game(con, game_id)
     language = language or game["language"]
@@ -155,7 +155,7 @@ def generate(con, game_id, out_dir, language=None, font=None, force_language=Tru
             out.append("    new %s\n\n" % encode_say_string(e["translation"]))
         write("_strings.rpy", "".join(out))
 
-    write("_language.rpy", language_script(language, font, force_language))
+    write("_language.rpy", language_script(language, font, force_language, font_mode))
     return written, {"dialogue_files": len(by_file), "strings": len(strings),
                      "skipped_existing": skipped}
 
@@ -164,7 +164,65 @@ FONT_STYLES = ("default", "say_dialogue", "say_label", "say_thought", "button_te
                "choice_button_text", "label_text", "prompt_text", "input", "hyperlink_text")
 
 
-def language_script(language, font=None, force_language=True):
+# 글자 범위: 한글 자모, 호환 자모, 자모 확장-A, 한글 음절, 자모 확장-B
+HANGUL_RANGES = ((0x1100, 0x11FF), (0x3130, 0x318F), (0xA960, 0xA97F), (0xAC00, 0xD7FF))
+
+FALLBACK_TEMPLATE = """
+# 한글 글자만 한글 폰트로 그리고, 영문/숫자/기호는 게임 원래 폰트를 그대로 쓴다.
+# (화려한 폰트나 타이틀 화면 폰트에 한글 글리프가 없어서 글자가 안 보이는 문제 해결)
+# Ren'Py 내부(TextSegment.subsegment)를 감싸므로 실패하면 조용히 원래 동작으로 돌아간다.
+init 1000 python:
+    try:
+        import renpy.text.text as _rpytl_text
+        import renpy.text.font as _rpytl_font
+
+        _rpytl_font_path = %(font)r
+        _rpytl_hangul = %(ranges)r
+        _rpytl_groups = {}
+        _rpytl_orig_sub = _rpytl_text.TextSegment.subsegment
+
+        def _rpytl_has_hangul(s):
+            for c in s:
+                n = ord(c)
+                for a, b in _rpytl_hangul:
+                    if a <= n <= b:
+                        return True
+            return False
+
+        def _rpytl_subsegment(self, s):
+            try:
+                tf = self.font
+                if (isinstance(tf, _rpytl_font.FontGroup) or tf == _rpytl_font_path
+                        or not _rpytl_has_hangul(s)):
+                    return list(_rpytl_orig_sub(self, s))
+                g = _rpytl_groups.get(tf)
+                if g is None:
+                    g = _rpytl_font.FontGroup()
+                    for a, b in _rpytl_hangul:
+                        g.add(_rpytl_font_path, a, b)
+                    g.add(tf, None)
+                    _rpytl_groups[tf] = g
+                segs = {}
+                out = []
+                for f, ss in g.segment(s):
+                    seg = segs.get(f)
+                    if seg is None:
+                        seg = _rpytl_text.TextSegment(self)
+                        seg.font = f
+                        segs[f] = seg
+                    out.append((seg, ss))
+                return out
+            except Exception:
+                return list(_rpytl_orig_sub(self, s))
+
+        _rpytl_text.TextSegment.subsegment = _rpytl_subsegment
+    except Exception:
+        pass
+"""
+
+
+def language_script(language, font=None, force_language=True, font_mode="fallback"):
+    """font_mode: fallback = 한글만 한글 폰트 (기본), replace = 주요 스타일의 폰트를 통째로 교체"""
     lines = [HEADER, "\n"]
     lines.append("init 999 python:\n")
     lines.append("    try:\n")
@@ -172,7 +230,9 @@ def language_script(language, font=None, force_language=True):
     if force_language:
         lines.append("        config.language = %r\n" % language)
     lines.append("    except Exception:\n        pass\n\n")
-    if font:
+    if font and font_mode == "fallback":
+        lines.append(FALLBACK_TEMPLATE % {"font": font, "ranges": HANGUL_RANGES})
+    elif font:
         # font: game/ 기준 경로 (예: tl/korean/rpytl/font.ttf)
         lines.append("translate %s python:\n" % language)
         lines.append("    try:\n")

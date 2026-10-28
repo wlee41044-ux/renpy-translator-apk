@@ -58,7 +58,7 @@ class AppGame(private val context: Context, val pkg: String) {
     }
 
     /** export 결과를 Android/data/<pkg>/files/game/tl/<lang>/rpytl/ 로. 오래된 파일(.rpyc 포함)은 지운다. */
-    fun writeOutput(outDir: File, result: JSONObject, fontUri: Uri?, fontName: String?, log: (String) -> Unit): Int {
+    fun writeOutput(outDir: File, result: JSONObject, fontFile: File?, fontName: String?, log: (String) -> Unit): Int {
         val fs = ShizukuFs.get()
         val files = result.getJSONArray("files")
         val rels = (0 until files.length()).map { files.getString(it) }
@@ -82,8 +82,8 @@ class AppGame(private val context: Context, val pkg: String) {
                 fs.write("$game/$rel", pfd)
             }
         }
-        if (fontUri != null && fontName != null) {
-            context.contentResolver.openFileDescriptor(fontUri, "r")?.use { pfd -> fs.write("$base/$fontName", pfd) }
+        if (fontFile != null && fontName != null) {
+            ParcelFileDescriptor.open(fontFile, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd -> fs.write("$base/$fontName", pfd) }
             log("폰트 복사: $baseRel/$fontName")
         }
         return rels.size

@@ -115,6 +115,11 @@ class GameFolder(resolver: ContentResolver, treeUri: Uri) {
         return rels.size
     }
 
+    fun writeFontFile(language: String, name: String, source: File) {
+        val baseId = saf.mkdirs(gameId, listOf("tl", language, "rpytl"))
+        saf.writeFile(baseId, name, source)
+    }
+
     fun writeFont(language: String, name: String, source: Uri) {
         val baseId = saf.mkdirs(gameId, listOf("tl", language, "rpytl"))
         saf.writeFromUri(baseId, name, source)

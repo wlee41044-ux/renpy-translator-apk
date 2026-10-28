@@ -398,6 +398,9 @@ private fun SettingsPanel(prefs: Prefs) {
         BoolPref("로컬: 생각(thinking) 모드 끄기 (Qwen3)", prefs.localNoThink) { prefs.localNoThink = it }
         TextPref("로컬: GGUF 모델 파일 경로 (아래 버튼으로 선택 권장)", prefs.modelPath) { prefs.modelPath = it }
         BoolPref("언어 강제 (config.language)", prefs.forceLanguage) { prefs.forceLanguage = it }
+        BoolPref(
+            "폰트: 한글만 한글 폰트로 (끄면 게임 폰트를 통째로 교체)", prefs.fontMode == "fallback",
+        ) { prefs.fontMode = if (it) "fallback" else "replace" }
     }
 }
 

@@ -87,7 +87,8 @@ def stats(db_path, game_id):
         con.close()
 
 
-def export(db_path, game_id, out_dir, font=None, force_language=True, existing_tl_dir=None):
+def export(db_path, game_id, out_dir, font=None, force_language=True, existing_tl_dir=None,
+           font_mode="fallback"):
     if os.path.isdir(out_dir):
         shutil.rmtree(out_dir)
     os.makedirs(out_dir, exist_ok=True)
@@ -95,7 +96,8 @@ def export(db_path, game_id, out_dir, font=None, force_language=True, existing_t
     try:
         written, info = tlgen.generate(con, game_id, out_dir, font=font or None,
                                        force_language=bool(force_language),
-                                       existing_tl_dir=existing_tl_dir or None)
+                                       existing_tl_dir=existing_tl_dir or None,
+                                       font_mode=font_mode or "fallback")
         return _j({"files": written, "info": info})
     finally:
         con.close()

@@ -83,3 +83,16 @@ def test_garbage_raises_rpyc_error():
         rpyc.load_rpyc_bytes(b"RENPY RPC2" + b"\x00" * 12)
     with pytest.raises(rpyc.RpycError):
         rpyc.load_rpyc_bytes(b"not zlib at all")
+
+
+def test_defaultdict_and_containers_in_pickle():
+    """실제 Ren'Py 파일에는 collections.defaultdict(list) 같은 것이 들어 있다 ('type' object is not iterable)."""
+    import collections
+    node = f.Label(("s.rpy", 1), name="start", block=[], hide=False)
+    node.extra = collections.defaultdict(list)
+    node.extra["a"].append(1)
+    node.ordered = collections.OrderedDict([("k", 1)])
+    node.s = {1, 2}
+    say = f.TranslateSay(("s.rpy", 2), who="e", what="Hi.", identifier="start_00000001", language=None)
+    items = rpyc.extract_from_rpyc(f.make_rpyc([node, say]), "s.rpy")
+    assert [i.source for i in items] == ["Hi."]

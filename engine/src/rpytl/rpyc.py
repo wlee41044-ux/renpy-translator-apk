@@ -90,16 +90,34 @@ class FakeStr(str):
 
 
 class FakeList(list):
+    def __init__(self, *args, **kwargs):
+        try:
+            list.__init__(self, *args)
+        except TypeError:
+            pass
+
     def __setstate__(self, state):
         _apply_state(self, state)
 
 
 class FakeDict(dict):
+    def __init__(self, *args, **kwargs):
+        try:
+            dict.__init__(self, *args)
+        except (TypeError, ValueError):
+            pass
+
     def __setstate__(self, state):
         _apply_state(self, state)
 
 
 class FakeSet(set):
+    def __init__(self, *args, **kwargs):
+        try:
+            set.__init__(self, *args)
+        except TypeError:
+            pass
+
     def __setstate__(self, state):
         _apply_state(self, state)
 
@@ -142,6 +160,11 @@ def _safe_reconstructor(cls, base, state):
     return obj
 
 
+def _safe_defaultdict(factory=None, *args):
+    """defaultdict(list) 의 factory(타입)를 dict() 에 넘기면 'type' object is not iterable 이 난다."""
+    return FakeDict()
+
+
 _SAFE = {
     ("builtins", "set"): set, ("__builtin__", "set"): set,
     ("builtins", "frozenset"): frozenset, ("__builtin__", "frozenset"): frozenset,
@@ -155,7 +178,7 @@ _SAFE = {
     ("builtins", "float"): float, ("__builtin__", "float"): float,
     ("builtins", "bool"): bool, ("__builtin__", "bool"): bool,
     ("collections", "OrderedDict"): dict,
-    ("collections", "defaultdict"): FakeDict,
+    ("collections", "defaultdict"): _safe_defaultdict,
     ("copy_reg", "_reconstructor"): _safe_reconstructor,
     ("copyreg", "_reconstructor"): _safe_reconstructor,
     # Ren'Py 8.4+ cslots 객체는 (copyreg.__newobj__, (cls,), (None, slots)) 로 피클된다

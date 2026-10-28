@@ -140,12 +140,12 @@ def test_runner_translates_everything_and_restores_tags(game, monkeypatch):
     assert r["status"] == "finished"
     con = db.connect(dbp)
     s = db.stats(con, gid)
-    assert s["done"] == s["total"] == 17
+    assert s["done"] == s["total"] == 18
     tr = {row["source"]: row["translation"] for row in con.execute("SELECT * FROM texts")}
     assert tr["Good morning, [player_name]!"] == "번역:Good morning, [player_name]!"
     assert tr["Hey, it's %(time)s already.\nWe're late!"] == \
         "번역:Hey, it's %(time)s already.\nWe're late!"
-    assert ctl.prog[-1] == (17, 17)
+    assert ctl.prog[-1] == (18, 18)
     # 모든 요청은 ko 로
     assert all("ZQ" in c or "[" not in c for c in net.calls)
 

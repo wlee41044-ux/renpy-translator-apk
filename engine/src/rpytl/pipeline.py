@@ -66,10 +66,10 @@ def is_renpy_apk(path):
     return apk.is_renpy_apk(path)
 
 
-def scan_game(db_path, game_id, work_game_dir, renpy_version_text=None):
+def scan_game(db_path, game_id, work_game_dir, renpy_version_text=None, py_strings=True):
     """renpy_version_text: 게임의 renpy/vc_version.py 또는 renpy/__init__.py 내용 (없으면 None)."""
     ver = parse_renpy_version(renpy_version_text)
-    items, files, errors = scan.collect_items(work_game_dir, tlid_only_considers_say(ver))
+    items, files, errors = scan.collect_items(work_game_dir, tlid_only_considers_say(ver), bool(py_strings))
     con = open_db(db_path)
     try:
         counts = scan.apply_scan(con, game_id, items)

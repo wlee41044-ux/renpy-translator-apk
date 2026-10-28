@@ -183,7 +183,7 @@ class TranslateService : Service() {
             JobState.log("스크립트(.rpa/.rpy/.rpyc)를 찾지 못했습니다.")
             return
         }
-        val r = engine.scan(gameId, versionText)
+        val r = engine.scan(gameId, versionText, prefs.pyStrings)
         val c = r.getJSONObject("counts")
         JobState.log(
             "스캔 완료 (Ren'Py ${r.optString("renpy_version", "?")}): 항목 ${r.getInt("items")}개 — " +

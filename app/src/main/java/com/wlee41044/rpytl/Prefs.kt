@@ -77,6 +77,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("force_language", true)
         set(v) = sp.edit().putBoolean("force_language", v).apply()
 
+    /** 게임 코드(파이썬) 속 문자열도 번역 대상에 넣기: 아이템/스킬 설명, 상태창 글자 등 */
+    var pyStrings: Boolean
+        get() = sp.getBoolean("py_strings", true)
+        set(v) = sp.edit().putBoolean("py_strings", v).apply()
+
     /** fallback = 한글만 한글 폰트로 그리고 영문은 게임 폰트 유지 (기본), replace = 주요 스타일 폰트를 통째로 교체 */
     var fontMode: String
         get() = sp.getString("font_mode", "fallback")!!

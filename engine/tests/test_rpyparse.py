@@ -69,7 +69,7 @@ def test_sample_game_items():
     assert by_src["Thanks for playing!"].label == "chapter2"
     assert by_src["Here you go."].ident.startswith("start_")
     strings = {i.ident for i in items if i.kind == STRING}
-    assert strings == {"Alice", "Yes, please.", "No, thanks."}
+    assert strings == {"Alice", "Bob", "Yes, please.", "No, thanks."}   # Character("Bob") 이름도 표시되는 글
 
 
 def test_identifier_uses_label_and_encoded_code():
@@ -165,3 +165,75 @@ def test_atl_and_testcase_blocks_are_not_dialogue():
            'testsuite ts:\n'
            '    description "Suite"\n')
     assert [d.source for d in _dl(extract_from_rpy(src, "x.rpy"))] == ["Real line."]
+
+
+PY_DATA = '''
+init python:
+    class Item(object):
+        def __init__(self, name, desc, icon, kind):
+            self.name, self.desc, self.icon, self.kind = name, desc, icon, kind
+
+    items = {
+        "sword": Item("Iron Sword", "A sturdy blade.\\nDeals {b}10{/b} damage.", "images/sword.png", "weapon"),
+        "potion": Item("Potion", "Restores [hp] HP", "images/potion.png", "consumable"),
+    }
+    stat_labels = ["HP", "MP", "attack", "Status Window"]   # don't confuse the scanner
+
+define skill_names = ["Fire Ball", "heal"]
+default quest_text = "Find the lost sword."
+
+screen status():
+    text "Level" 
+    textbutton "Close" action Hide("status")
+    text "[player.name]" style "status_text"
+
+label start:
+    $ gold_msg = "Not enough gold!"
+    $ flag = "met_bob"
+'''
+
+
+def _strs(items):
+    return {i.ident for i in items if i.kind == STRING}
+
+
+def test_python_strings_are_extracted_for_items_skills_status():
+    got = _strs(extract_from_rpy(PY_DATA, "items.rpy"))
+    assert {"Iron Sword", "Potion", "A sturdy blade.\nDeals {b}10{/b} damage.", "Restores [hp] HP",
+            "HP", "MP", "Status Window", "Fire Ball", "Find the lost sword.", "Level", "Close",
+            "Not enough gold!"} <= got
+    # 내부용 키/경로/식별자는 제외
+    assert not ({"sword", "potion", "weapon", "consumable", "images/sword.png", "attack", "heal",
+                 "met_bob", "status_text", "status"} & got)
+
+
+def test_python_strings_can_be_turned_off():
+    got = _strs(extract_from_rpy(PY_DATA, "items.rpy", py_strings=False))
+    assert "Iron Sword" not in got and "Fire Ball" not in got and "Not enough gold!" not in got
+    assert {"Level", "Close"} <= got          # 화면 text/textbutton 리터럴은 원래부터 대상
+
+
+def test_looks_translatable_rules():
+    from rpytl.strscan import looks_translatable as t
+    assert t("Iron Sword") and t("Sword") and t("体力") and t("HP") and t("Status Window")
+    assert not t("images/a.png") and not t("bgm.ogg") and not t("#ff00ff") and not t("ITEM_ID")
+    assert not t("sword") and not t("camelCase") and not t("123") and not t("x") and not t("a.b")
+
+
+def test_rpyc_python_code_strings_and_old_tl_are_handled():
+    import fakerenpy as f
+    from rpytl import rpyc
+    code = f.PyCode('items = {"sword": ("Iron Sword", "A sturdy blade.", "images/s.png")}\n'
+                    'labels = ["Status Window", "attack"]')
+    init = f.Init(("a.rpy", 1), block=[f.Define(("a.rpy", 2), varname="x", code=code)])
+    old_tl = f.Translate(("tl/x.rpy", 1), identifier="s_1", language="korean",
+                         block=[f.Say(("x", 1), who=None, what="OLD")])
+    old_py = f.Init(("tl/x.rpy", 5), block=[f.Define(("tl/x.rpy", 6), varname="y",
+                                                    code=f.PyCode('z = "Korean Old Text"'))])
+    old_tl.block.append(old_py)
+    got = _strs(rpyc.extract_from_rpyc(f.make_rpyc([init, old_tl]), "a.rpy"))
+    assert {"Iron Sword", "A sturdy blade.", "Status Window"} <= got
+    assert "sword" not in got and "attack" not in got
+    assert "Korean Old Text" not in got       # 기존 번역(language 있는 블록) 안은 원문이 아님
+    off = _strs(rpyc.extract_from_rpyc(f.make_rpyc([init]), "a.rpy", py_strings=False))
+    assert "Iron Sword" not in off

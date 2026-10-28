@@ -17,7 +17,7 @@ def _load_key(base):
     return (fn >= "A", fn)
 
 
-def collect_items(game_dir, tlid_only_say=False):
+def collect_items(game_dir, tlid_only_say=False, py_strings=True):
     """game_dir (게임의 game/ 폴더 사본) 아래 스크립트에서 항목 수집.
 
     같은 경로의 .rpy 와 .rpyc 가 있으면 .rpy 사용. 반환: (items, files, errors)
@@ -49,10 +49,10 @@ def collect_items(game_dir, tlid_only_say=False):
         path = os.path.join(game_dir, rel)
         try:
             if rel in texts:
-                got = extract_from_rpy(texts[rel], base, tlid_only_say, global_ids)
+                got = extract_from_rpy(texts[rel], base, tlid_only_say, global_ids, py_strings)
             else:
                 with open(path, "rb") as f:
-                    got = extract_from_rpyc(f.read(), base, global_ids)
+                    got = extract_from_rpyc(f.read(), base, global_ids, py_strings)
         except (RpycError, RecursionError, ValueError) as e:
             errors.append("%s: %s" % (rel, e))
             continue

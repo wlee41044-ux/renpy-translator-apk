@@ -24,11 +24,11 @@ def test_scan_counts_and_resume(tmp_path):
     dbp, gid, game = _setup(tmp_path)
     r = json.loads(pipeline.scan_game(dbp, gid, game))
     assert r["errors"] == []
-    assert r["counts"]["added"] == r["items"] == 10 + 3 + 4
-    assert r["stats"]["total"] == 17 and r["stats"]["pending"] == 17
+    assert r["counts"]["added"] == r["items"] == 10 + 3 + 5
+    assert r["stats"]["total"] == 18 and r["stats"]["pending"] == 18
     # 다시 스캔해도 변화 없음
     r2 = json.loads(pipeline.scan_game(dbp, gid, game))
-    assert r2["counts"] == {"added": 0, "changed": 0, "removed": 0, "unchanged": 17,
+    assert r2["counts"] == {"added": 0, "changed": 0, "removed": 0, "unchanged": 18,
                             "reactivated": 0}
 
 
@@ -37,7 +37,7 @@ def test_update_diff_keeps_translations_and_history(tmp_path):
     pipeline.scan_game(dbp, gid, game)
     con = db.connect(dbp)
     _translate_all(con, gid)
-    assert db.stats(con, gid)["done"] == 17
+    assert db.stats(con, gid)["done"] == 18
 
     shutil.rmtree(game)
     shutil.copytree(os.path.join(DATA, "game_v2"), game)
@@ -47,12 +47,12 @@ def test_update_diff_keeps_translations_and_history(tmp_path):
     assert c["changed"] == 1
     assert c["removed"] == 1
     assert c["added"] == 1
-    assert c["unchanged"] == 15
+    assert c["unchanged"] == 16
 
     s = db.stats(con, gid)
     assert s["unused"] == 1
     assert s["pending"] == 2          # 변경 1 + 신규 1 만 다시 번역
-    assert s["done"] == 15
+    assert s["done"] == 16
 
     h = db.history(con, gid)
     assert len(h) == 1
@@ -220,5 +220,5 @@ def test_backup_db_keeps_records_and_rotates(tmp_path):
     left = sorted(os.listdir(os.path.join(os.path.dirname(dbp), "backup")))
     assert len(left) == 3
     con2 = db.connect(os.path.join(os.path.dirname(dbp), "backup", left[-1]))
-    assert db.stats(con2, gid)["done"] == 17
+    assert db.stats(con2, gid)["done"] == 18
     assert pipeline.backup_db(str(tmp_path / "none.db")) == ""

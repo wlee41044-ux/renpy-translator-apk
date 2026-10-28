@@ -17,7 +17,7 @@ import zlib
 
 from .rpa import safe_bytes, safe_codecs_encode
 from .model import DIALOGUE, STRING, IdentifierAllocator, Item, say_code
-from .strscan import scan_marked_strings
+from .strscan import python_literals, scan_marked_strings
 
 
 class RpycError(Exception):
@@ -432,7 +432,10 @@ class Extractor:
                         self.walk_block(e[1])
 
 
-def _scan_code_strings(root, extractor):
+_OLD_TL_CLASSES = ("TranslateString", "TranslatePython", "TranslateBlock", "TranslateEarlyBlock")
+
+
+def _scan_code_strings(root, extractor, py_strings=True):
     """그래프 전체에서 코드 문자열(PyExpr, PyCode 소스)의 _() 와 screen 텍스트 리터럴을 찾는다."""
     stack = [root]
     seen = set()
@@ -444,6 +447,8 @@ def _scan_code_strings(root, extractor):
         seen.add(id(o))
         if isinstance(o, FakeStr):
             found.extend(scan_marked_strings(_text(o)))
+            if py_strings:
+                found.extend(python_literals(_text(o)))
             continue
         if isinstance(o, str):
             continue
@@ -457,10 +462,15 @@ def _scan_code_strings(root, extractor):
         if d is None:
             continue
         c = _cls(o)
+        if c in _OLD_TL_CLASSES or (c in ("Translate", "TranslateSay") and d.get("language") is not None):
+            continue   # 기존 번역 파일의 내용은 원문이 아님
         if c == "PyCode":
             st = d.get("_state")
-            if isinstance(st, tuple) and len(st) > 1 and isinstance(st[1], str):
-                found.extend(scan_marked_strings(_text(st[1])))
+            src = st[1] if isinstance(st, tuple) and len(st) > 1 else d.get("source")
+            if isinstance(src, str):
+                found.extend(scan_marked_strings(_text(src)))
+                if py_strings:
+                    found.extend(python_literals(_text(src)))
         elif c == "SLDisplayable":
             disp = d.get("displayable")
             dname = getattr(disp, "_fake_name", getattr(disp, "__name__", ""))
@@ -484,10 +494,10 @@ def _literal_string(src):
     return v if isinstance(v, str) else None
 
 
-def extract_from_rpyc(data, relpath, global_ids=None):
+def extract_from_rpyc(data, relpath, global_ids=None, py_strings=True):
     """rpyc 바이트 → [Item]"""
     _, stmts = load_rpyc_bytes(data)
     ex = Extractor(relpath, global_ids)
     ex.walk_block(stmts)
-    _scan_code_strings(stmts, ex)
+    _scan_code_strings(stmts, ex, py_strings)
     return ex.items

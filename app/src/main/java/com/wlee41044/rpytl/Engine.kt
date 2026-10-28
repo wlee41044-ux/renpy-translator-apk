@@ -53,8 +53,11 @@ class Engine(context: Context) {
                 .toString()
         )
 
-    fun scan(gameId: Long, renpyVersionText: String?): JSONObject =
-        JSONObject(py.callAttr("scan_game", dbPath, gameId, workDir(gameId).absolutePath, renpyVersionText).toString())
+    fun scan(gameId: Long, renpyVersionText: String?, pyStrings: Boolean = true): JSONObject =
+        JSONObject(
+            py.callAttr("scan_game", dbPath, gameId, workDir(gameId).absolutePath, renpyVersionText, pyStrings)
+                .toString()
+        )
 
     fun export(
         gameId: Long, font: String?, forceLanguage: Boolean, existingTlDir: String?, fontMode: String,

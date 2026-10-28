@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 from .model import DIALOGUE, STRING, IdentifierAllocator, Item, say_code
 from .rpyc import _literal_string
-from .strscan import scan_marked_strings
+from .strscan import python_literals, scan_marked_strings
 
 
 @dataclass
@@ -251,8 +251,9 @@ def _parse_say(text):
 
 
 class RpyExtractor:
-    def __init__(self, relpath, tlid_only_say=False, reserved=(), global_ids=None):
+    def __init__(self, relpath, tlid_only_say=False, reserved=(), global_ids=None, py_strings=True):
         self.file = relpath
+        self.py_strings = py_strings
         self.tlid_only_say = tlid_only_say
         self.items = []
         self.alloc = IdentifierAllocator(reserved, global_ids)
@@ -265,9 +266,14 @@ class RpyExtractor:
         for node in nodes:
             self.stmt(node, in_screen)
 
-    def _strings_in(self, node, in_screen):
+    def _strings_in(self, node, in_screen, py=False):
         for s in scan_marked_strings(node.text):
             self._string(s, node.line)
+        if py and self.py_strings:
+            # 코드 속 문자열 (아이템/스킬 설명 등). 화면에 표시될 때 Ren'Py 가 old/new 로 번역해 준다.
+            code = node.text[1:] if node.text.startswith("$") else node.text
+            for s in python_literals(code):
+                self._string(s, node.line)
         if in_screen:
             m = _SCREEN_TEXT_RE.match(node.text)
             if m:
@@ -275,10 +281,10 @@ class RpyExtractor:
                 if lit:
                     self._string(lit, node.line)
 
-    def _deep_strings(self, node, in_screen):
-        self._strings_in(node, in_screen)
+    def _deep_strings(self, node, in_screen, py=False):
+        self._strings_in(node, in_screen, py)
         for c in node.children:
-            self._deep_strings(c, in_screen)
+            self._deep_strings(c, in_screen, py)
 
     def _string(self, s, line):
         if s and s.strip():
@@ -325,7 +331,7 @@ class RpyExtractor:
         word = re.match(r"[\w$]*", t).group(0)
 
         if in_screen:
-            self._strings_in(node, True)
+            self._strings_in(node, True, py=True)
             self.walk(node.children, True)
             return
 
@@ -359,7 +365,7 @@ class RpyExtractor:
             if word == "init" and t.rstrip().endswith(":") and not re.search(r"\bpython\b", t):
                 self.walk(node.children)
             else:
-                self._deep_strings(node, False)
+                self._deep_strings(node, False, py=True)
             return
         if word == "menu":
             self.group = []
@@ -425,11 +431,11 @@ def _explicit_ids(nodes, out):
     return out
 
 
-def extract_from_rpy(src, relpath, tlid_only_say=False, global_ids=None):
+def extract_from_rpy(src, relpath, tlid_only_say=False, global_ids=None, py_strings=True):
     """tlid_only_say: Ren'Py 8.6+ 기본값(config.tlid_only_considers_say=True).
     True 면 voice 등 say 이외 문장이 식별자 계산에서 빠진다."""
     tree = build_tree(logical_lines(src))
-    ex = RpyExtractor(relpath, tlid_only_say, _explicit_ids(tree, set()), global_ids)
+    ex = RpyExtractor(relpath, tlid_only_say, _explicit_ids(tree, set()), global_ids, py_strings)
     # 화자 이름 표시용: define 을 먼저 훑는다
     for node in tree:
         m = _CHAR_DEFINE_RE.match(node.text)

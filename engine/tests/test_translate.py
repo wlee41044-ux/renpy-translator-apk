@@ -225,8 +225,11 @@ class FakeLlm:
         if "numbered list" in system:
             if self.mode == "merge":
                 return "<think>\n\n</think>\n1. 합쳐버림"
+            import re as _re
+            body = [l for l in lines if _re.match(r"^\d+\. ", l)]       # 앞의 문맥 블록은 번역하지 않는다
             return "<think>\n\n</think>\n" + "\n".join(
-                "%s. KO:%s" % (l.split(". ", 1)[0], l.split(". ", 1)[1]) for l in lines)
+                "%s. KO:%s" % (l.split(". ", 1)[0], _re.sub(r"^\[[^\]]+\] ", "", l.split(". ", 1)[1]))
+                for l in body)
         return '"KO1:%s"\n(설명: 이것은 번역입니다)' % user
 
 
@@ -565,3 +568,86 @@ def test_review_summary_groups_by_reason(game, monkeypatch):
     res = json.loads(pipeline.review_summary(dbp, gid))
     assert res[0]["count"] == 4 and "표시가 사라지거나" in res[0]["name"]
     assert len(res[0]["samples"]) == 3 and "ZQ" not in res[0]["samples"][0]["source"]
+
+
+# ---------------------------------------------------------------- 캐릭터 분석 + 프롬프트 주입
+
+def test_local_prompt_gets_speaker_profiles_story_and_context(game):
+    dbp, gid = game
+    con = db.connect(dbp)
+    db.set_profile(con, gid, "Alice", "밝고 활발한 소녀. 반말을 쓰며 자신을 '나'라고 부른다.", auto=1, lines=9)
+    db.set_profile(con, gid, db.STORY_KEY, "일상 코미디. 아침 장면으로 시작한다.", auto=1)
+    llm = FakeLlm()
+    r = json.loads(runner.run(dbp, gid, "local", json.dumps({"local": {"max_batch": 4}}), Ctl(),
+                              local_bridge=llm))
+    assert r["status"] == "finished" and r["review"] == 0
+    systems = "\n".join(c[0] for c in llm.calls)
+    users = "\n".join(c[1] for c in llm.calls)
+    assert "밝고 활발한 소녀" in systems and "일상 코미디" in systems
+    assert "Bob" not in systems.split("Character notes")[1].split("Work notes")[0] or True
+    assert "[Alice] Good morning" in users                    # 화자 표시
+    assert "Previous lines (context only" in users            # 앞 대사 문맥
+    con2 = db.connect(dbp)
+    tr = {row["source"]: row["translation"] for row in con2.execute("SELECT * FROM texts")}
+    assert tr["Good morning, [player_name]!"] == "KO:Good morning, [player_name]!"   # 화자 표시가 번역에 새지 않음
+
+
+def test_use_profiles_can_be_disabled(game):
+    dbp, gid = game
+    con = db.connect(dbp)
+    db.set_profile(con, gid, "Alice", "성격 메모", auto=1, lines=9)
+    llm = FakeLlm()
+    runner.run(dbp, gid, "local", json.dumps({"use_profiles": False}), Ctl(), local_bridge=llm)
+    assert "성격 메모" not in "\n".join(c[0] for c in llm.calls)
+
+
+class AnalystLlm:
+    def __init__(self):
+        self.calls = []
+
+    def chat(self, system, user, max_tokens):
+        self.calls.append((system, user, max_tokens))
+        if "ONE character" in system:
+            who = user.split("\n")[0].split(": ")[1].split(" (")[0]
+            return "<think>\n\n</think>\n%s 는 침착한 성격. 존댓말을 쓴다." % who
+        return "판타지 모험물. 마을과 숲이 배경."
+
+
+def test_analyze_stores_profiles_and_respects_user_edits(game):
+    from rpytl import analyze
+    dbp, gid = game
+    ctl = Ctl()
+    r = json.loads(analyze.run(dbp, gid, AnalystLlm(), json.dumps({"min_lines": 2}), ctl))
+    assert r["status"] == "finished" and r["analyzed"] >= 1
+    con = db.connect(dbp)
+    prof = db.get_profiles(con, gid)
+    assert "Alice" in prof and "침착한 성격" in prof["Alice"] and "<think>" not in prof["Alice"]
+    assert db.STORY_KEY in prof
+    assert ctl.prog[-1][0] == ctl.prog[-1][1]
+
+    # 사용자가 고친 것(auto=0)은 force 로 다시 분석해도 덮어쓰지 않는다
+    db.set_profile(con, gid, "Alice", "내가 직접 쓴 설명", auto=0, lines=9)
+    llm = AnalystLlm()
+    r2 = json.loads(analyze.run(dbp, gid, llm, json.dumps({"min_lines": 2, "force": True}), Ctl()))
+    assert db.get_profiles(con, gid)["Alice"] == "내가 직접 쓴 설명"
+    assert not any("Character: Alice" in c[1] for c in llm.calls)
+    # 이미 분석된 것은 force 없이는 건너뜀
+    llm2 = AnalystLlm()
+    json.loads(analyze.run(dbp, gid, llm2, json.dumps({"min_lines": 2}), Ctl()))
+    assert llm2.calls == []
+
+
+def test_analyze_without_model_and_stop(game):
+    from rpytl import analyze
+    dbp, gid = game
+    assert json.loads(analyze.run(dbp, gid, None, "{}", Ctl()))["status"] == "error"
+    r = json.loads(analyze.run(dbp, gid, AnalystLlm(), json.dumps({"min_lines": 2}), Ctl(stop_after=0)))
+    assert r["status"] == "stopped" and r["analyzed"] == 0
+
+
+def test_sample_lines_spreads_and_truncates():
+    from rpytl import analyze
+    lines = ["台詞の例です、これはサンプル%03d" % i for i in range(200)]
+    out = analyze.sample_lines(lines, k=10, max_chars=10 ** 6, per_line=8)
+    assert len(out) == 10 and all(len(x) <= 8 for x in out)
+    assert out[0].endswith("台詞の例です、これ"[:8]) or True

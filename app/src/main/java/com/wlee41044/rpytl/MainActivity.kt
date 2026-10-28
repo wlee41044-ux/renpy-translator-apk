@@ -46,6 +46,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -83,6 +84,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+
+private data class CharRow(val name: String, val lines: Int, val profile: String)
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -295,6 +298,12 @@ private fun MainScreen(engine: Engine, prefs: Prefs) {
                 Button(enabled = !busy, onClick = { TranslateService.start(ctx, TranslateService.ACTION_EXPORT, gid) }) {
                     Text("출력 파일 생성")
                 }
+                OutlinedButton(enabled = !busy, onClick = {
+                    TranslateService.start(ctx, TranslateService.ACTION_ANALYZE, gid)
+                }) { Text("캐릭터 분석") }
+                Button(enabled = !busy, onClick = {
+                    TranslateService.start(ctx, TranslateService.ACTION_ANALYZE_TRANSLATE, gid)
+                }) { Text("분석 후 번역(밤새)") }
                 OutlinedButton(enabled = !busy && stats.review > 0, onClick = {
                     TranslateService.start(ctx, TranslateService.ACTION_TRANSLATE, gid, retryReview = true)
                 }) { Text("검수필요 재번역") }
@@ -363,6 +372,55 @@ private fun MainScreen(engine: Engine, prefs: Prefs) {
                 }
             }
 
+            // ---- 캐릭터 분석 보기/수정
+            var showChars by remember(gid) { mutableStateOf(false) }
+            var chars by remember(gid) { mutableStateOf<List<CharRow>>(emptyList()) }
+            val edits = remember(gid) { mutableStateMapOf<String, String>() }
+            fun loadChars() {
+                scope.launch {
+                    chars = withContext(Dispatchers.IO) {
+                        runCatching {
+                            val a = engine.characters(gid)
+                            (0 until a.length()).map {
+                                val o = a.getJSONObject(it)
+                                CharRow(o.getString("name"), o.optInt("lines"), o.optString("profile"))
+                            }
+                        }.getOrElse { e -> ui("캐릭터 목록 읽기 실패: ${e.message}"); emptyList() }
+                    }
+                }
+            }
+            LaunchedEffect(dbVersion, showChars) { if (showChars) loadChars() }
+            OutlinedButton(onClick = { showChars = !showChars }) {
+                Text(if (showChars) "캐릭터 분석 닫기" else "캐릭터 분석 보기/수정")
+            }
+            if (showChars) {
+                Text(
+                    "분석 결과를 고치면 번역할 때 그 내용이 쓰입니다. 고친 것은 다시 분석해도 유지됩니다. 비우면 삭제.",
+                    fontSize = 12.sp,
+                )
+                if (chars.isEmpty()) Text("아직 분석 결과가 없습니다. '캐릭터 분석'을 먼저 실행하세요 (로컬 모델 필요).", fontSize = 12.sp)
+                for (c in chars) {
+                    val label = if (c.name == "__story__") "작품 요약" else "${c.name} (${c.lines}줄)"
+                    OutlinedTextField(
+                        value = edits[c.name] ?: c.profile,
+                        onValueChange = { edits[c.name] = it },
+                        label = { Text(label, fontSize = 12.sp) },
+                        minLines = 2,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                Button(enabled = edits.isNotEmpty(), onClick = {
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            for ((k, v) in edits.toMap()) runCatching { engine.setProfile(gid, k, v) }
+                        }
+                        edits.clear()
+                        ui("캐릭터 분석 수정 저장됨")
+                        loadChars()
+                    }
+                }) { Text("수정 저장") }
+            }
+
             OutlinedButton(enabled = !busy, onClick = {
                 scope.launch {
                     withContext(Dispatchers.IO) { engine.deleteGame(gid) }
@@ -403,6 +461,7 @@ private fun SettingsPanel(prefs: Prefs) {
         BoolPref("로컬: 생각(thinking) 모드 끄기 (Qwen3)", prefs.localNoThink) { prefs.localNoThink = it }
         TextPref("로컬: GGUF 모델 파일 경로 (아래 버튼으로 선택 권장)", prefs.modelPath) { prefs.modelPath = it }
         BoolPref("스캔: 코드 속 문자열도 번역 (아이템/스킬 설명, 상태창)", prefs.pyStrings) { prefs.pyStrings = it }
+        BoolPref("로컬 모델: 캐릭터 분석/화자/앞 대사를 번역에 사용", prefs.useProfiles) { prefs.useProfiles = it }
         BoolPref("언어 강제 (config.language)", prefs.forceLanguage) { prefs.forceLanguage = it }
         BoolPref(
             "폰트: 한글만 한글 폰트로 (끄면 게임 폰트를 통째로 교체)", prefs.fontMode == "fallback",

@@ -77,6 +77,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("force_language", true)
         set(v) = sp.edit().putBoolean("force_language", v).apply()
 
+    /** 번역할 때 캐릭터 분석 결과(성격/말투), 화자, 앞 대사를 로컬 모델 프롬프트에 넣기 */
+    var useProfiles: Boolean
+        get() = sp.getBoolean("use_profiles", true)
+        set(v) = sp.edit().putBoolean("use_profiles", v).apply()
+
     /** 게임 코드(파이썬) 속 문자열도 번역 대상에 넣기: 아이템/스킬 설명, 상태창 글자 등 */
     var pyStrings: Boolean
         get() = sp.getBoolean("py_strings", true)
@@ -94,6 +99,7 @@ class Prefs(context: Context) {
         put("source_lang", sourceLang)
         if (targetCode.isNotBlank()) put("target_code", targetCode.trim())
         put("retry_review", retryReview)
+        put("use_profiles", useProfiles)
         if (engine == "google" && fallbackLocal) put("fallback", "local")
         put(
             "google",

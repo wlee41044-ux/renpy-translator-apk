@@ -170,3 +170,39 @@ def review_summary(db_path, game_id):
         return _j(db.review_summary(con, game_id))
     finally:
         con.close()
+
+
+def analyze(db_path, game_id, opts_json, control, bridge=None):
+    """캐릭터 분석 (로컬 모델 필요). 결과는 DB profiles 에 저장."""
+    from . import analyze as analyzer
+    return analyzer.run(db_path, game_id, bridge, opts_json, control)
+
+
+def characters(db_path, game_id, min_lines=3):
+    """화면에 보여 줄 캐릭터 목록: 화자별 줄 수 + 분석 결과(없으면 빈 문자열). 작품 요약은 맨 앞."""
+    con = open_db(db_path)
+    try:
+        prof = {p["name"]: p for p in db.list_profiles(con, game_id)}
+        rows = []
+        story = prof.pop(db.STORY_KEY, None)
+        if story:
+            rows.append({"name": db.STORY_KEY, "lines": story["lines"] or 0, "profile": story["profile"],
+                         "auto": story["auto"]})
+        for name, n in db.speaker_stats(con, game_id):
+            if n >= min_lines or name in prof:
+                p = prof.pop(name, None)
+                rows.append({"name": name, "lines": n, "profile": p["profile"] if p else "",
+                             "auto": p["auto"] if p else 1})
+        return _j(rows[:80])
+    finally:
+        con.close()
+
+
+def set_profile(db_path, game_id, name, profile):
+    """사용자가 직접 고친 분석 (auto=0: 다시 분석해도 덮어쓰지 않음). 빈 문자열이면 삭제."""
+    con = open_db(db_path)
+    try:
+        with db.tx(con):
+            db.set_profile(con, game_id, name, profile, auto=0)
+    finally:
+        con.close()

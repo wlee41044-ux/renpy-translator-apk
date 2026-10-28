@@ -67,6 +67,17 @@ CREATE TABLE IF NOT EXISTS history (
     changed_at REAL NOT NULL
 );
 
+-- 캐릭터(화자)별 분석 결과. name '__story__' 는 작품 전체 요약. auto=1 이면 모델이 쓴 것, 0 이면 사용자가 고친 것.
+CREATE TABLE IF NOT EXISTS profiles (
+    game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    profile TEXT NOT NULL,
+    auto INTEGER NOT NULL DEFAULT 1,
+    lines INTEGER,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (game_id, name)
+);
+
 CREATE TABLE IF NOT EXISTS scans (
     id INTEGER PRIMARY KEY,
     game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
@@ -170,11 +181,21 @@ def pending_texts(con, game_id, limit, statuses=(PENDING,)):
 def pending_all(con, game_id, statuses=(PENDING,)):
     """번역 대기 원문 전부를 파일/줄 순서로 한 번에 읽는다 (배치마다 다시 조회하지 않기 위함)."""
     q = """
-        SELECT t.src_hash, t.source, MIN(e.file || ':' || printf('%%08d', e.line)) AS pos
+        SELECT t.src_hash, t.source, MIN(e.file || ':' || printf('%%08d', e.line)) AS pos,
+               e.kind AS kind, e.speaker AS speaker, e.file AS file, e.seq AS seq
         FROM texts t JOIN entries e ON e.game_id = t.game_id AND e.src_hash = t.src_hash
         WHERE t.game_id = ? AND e.active = 1 AND t.status IN (%s)
         GROUP BY t.src_hash ORDER BY pos""" % ",".join("?" * len(statuses))
+    # MIN() 집계와 함께 쓴 일반 열(kind/speaker/file/seq)은 SQLite 가 최소값을 가진 그 행의 값으로 채운다
     return [dict(r) for r in con.execute(q, (game_id, *statuses))]
+
+
+def dialogue_index(con, game_id):
+    """(file, seq) → (speaker, source). 번역할 줄의 앞 대사를 문맥으로 보여 주기 위한 색인."""
+    return {(r["file"], r["seq"]): (r["speaker"] or "", r["source"]) for r in con.execute(
+        """SELECT e.file, e.seq, e.speaker, t.source FROM entries e
+           JOIN texts t ON t.game_id = e.game_id AND t.src_hash = e.src_hash
+           WHERE e.game_id = ? AND e.kind = 'dialogue' AND e.active = 1""", (game_id,))}
 
 
 def set_translation(con, game_id, src_hash, translation, engine, status=DONE, note=None):
@@ -254,3 +275,51 @@ def review_list(con, game_id, limit=500):
 
 def dumps(o):
     return json.dumps(o, ensure_ascii=False, separators=(",", ":"))
+
+
+# ---------------------------------------------------------------- 캐릭터 분석
+
+STORY_KEY = "__story__"
+
+
+def speaker_stats(con, game_id):
+    """화자별 대사 줄 수 (활성 대사만, 해석된 이름 기준). [(name, count)] 많은 순."""
+    rows = con.execute("""SELECT speaker, COUNT(*) AS n FROM entries
+                          WHERE game_id = ? AND kind = 'dialogue' AND active = 1
+                            AND speaker IS NOT NULL AND speaker != ''
+                          GROUP BY speaker ORDER BY n DESC""", (game_id,))
+    return [(r["speaker"], r["n"]) for r in rows]
+
+
+def speaker_lines(con, game_id, name=None):
+    """화자(None 이면 전체)의 원문 대사를 파일/순서대로. [(speaker, source)]"""
+    q = """SELECT e.speaker AS speaker, t.source AS source FROM entries e
+           JOIN texts t ON t.game_id = e.game_id AND t.src_hash = e.src_hash
+           WHERE e.game_id = ? AND e.kind = 'dialogue' AND e.active = 1"""
+    args = [game_id]
+    if name is not None:
+        q += " AND e.speaker = ?"
+        args.append(name)
+    q += " ORDER BY e.file, e.seq"
+    return [(r["speaker"], r["source"]) for r in con.execute(q, args)]
+
+
+def get_profiles(con, game_id):
+    return {r["name"]: r["profile"] for r in
+            con.execute("SELECT name, profile FROM profiles WHERE game_id = ?", (game_id,))}
+
+
+def list_profiles(con, game_id):
+    return [dict(r) for r in con.execute(
+        "SELECT name, profile, auto, lines FROM profiles WHERE game_id = ? ORDER BY lines DESC, name", (game_id,))]
+
+
+def set_profile(con, game_id, name, profile, auto=0, lines=None):
+    profile = (profile or "").strip()
+    if not profile:
+        con.execute("DELETE FROM profiles WHERE game_id = ? AND name = ?", (game_id, name))
+        return
+    con.execute("""INSERT INTO profiles(game_id, name, profile, auto, lines, updated_at) VALUES (?,?,?,?,?,?)
+                   ON CONFLICT(game_id, name) DO UPDATE SET profile = excluded.profile, auto = excluded.auto,
+                       lines = COALESCE(excluded.lines, profiles.lines), updated_at = excluded.updated_at""",
+                (game_id, name, profile, auto, lines, now()))

@@ -251,7 +251,8 @@ def _parse_say(text):
 
 
 class RpyExtractor:
-    def __init__(self, relpath, tlid_only_say=False, reserved=(), global_ids=None, py_strings=True):
+    def __init__(self, relpath, tlid_only_say=False, reserved=(), global_ids=None, py_strings=True,
+                 chars=None):
         self.file = relpath
         self.py_strings = py_strings
         self.tlid_only_say = tlid_only_say
@@ -260,7 +261,7 @@ class RpyExtractor:
         self.global_label = None
         self.label = ""
         self.group = []  # say 앞의 번역 가능 문장 (voice 등)
-        self.characters = {}
+        self.characters = chars if chars is not None else {}
 
     def walk(self, nodes, in_screen=False):
         for node in nodes:
@@ -321,6 +322,8 @@ class RpyExtractor:
         if say["with_"]:
             post += ["with", say["with_"]]
         speaker = say["who"] or ""
+        if speaker[:1] in "\"'`":                 # "Bob" "Let's go."  처럼 문자열로 쓴 화자
+            speaker = renpy_string(speaker)
         self.items.append(Item(
             kind=DIALOGUE, ident=ident, source=what, file=self.file, line=line,
             speaker=self.characters.get(speaker, speaker), label=self.label,
@@ -431,11 +434,11 @@ def _explicit_ids(nodes, out):
     return out
 
 
-def extract_from_rpy(src, relpath, tlid_only_say=False, global_ids=None, py_strings=True):
+def extract_from_rpy(src, relpath, tlid_only_say=False, global_ids=None, py_strings=True, chars=None):
     """tlid_only_say: Ren'Py 8.6+ 기본값(config.tlid_only_considers_say=True).
     True 면 voice 등 say 이외 문장이 식별자 계산에서 빠진다."""
     tree = build_tree(logical_lines(src))
-    ex = RpyExtractor(relpath, tlid_only_say, _explicit_ids(tree, set()), global_ids, py_strings)
+    ex = RpyExtractor(relpath, tlid_only_say, _explicit_ids(tree, set()), global_ids, py_strings, chars)
     # 화자 이름 표시용: define 을 먼저 훑는다
     for node in tree:
         m = _CHAR_DEFINE_RE.match(node.text)

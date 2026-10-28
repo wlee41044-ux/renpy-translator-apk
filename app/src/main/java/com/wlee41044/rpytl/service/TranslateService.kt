@@ -25,6 +25,7 @@ import com.wlee41044.rpytl.R
 import com.wlee41044.rpytl.llm.LocalLlm
 import com.wlee41044.rpytl.apps.AppGame
 import com.wlee41044.rpytl.saf.GameFolder
+import org.json.JSONObject
 import com.wlee41044.rpytl.shizuku.ShizukuFs
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
@@ -39,6 +40,8 @@ class TranslateService : Service() {
         const val ACTION_SCAN = "scan"
         const val ACTION_TRANSLATE = "translate"
         const val ACTION_EXPORT = "export"
+        const val ACTION_ANALYZE = "analyze"
+        const val ACTION_ANALYZE_TRANSLATE = "analyze_translate"
         const val ACTION_PAUSE = "pause"
         const val EXTRA_GAME = "game"
         const val EXTRA_RETRY_REVIEW = "retry_review"
@@ -154,6 +157,11 @@ class TranslateService : Service() {
             when (action) {
                 ACTION_SCAN -> scan(game.id, game.folderUri, game.language)
                 ACTION_TRANSLATE -> translate(game.id, game.name, retryReview)
+                ACTION_ANALYZE -> analyze(game.id)
+                ACTION_ANALYZE_TRANSLATE -> {
+                    // 밤새 한 번에: 캐릭터 분석 → (로컬 모델로) 번역. 분석이 멈추면 번역은 하지 않는다.
+                    if (analyze(game.id)) translate(game.id, game.name, retryReview, forceLocal = true)
+                }
                 ACTION_EXPORT -> export(game.id, game.folderUri, game.language)
             }
         } finally {
@@ -195,8 +203,33 @@ class TranslateService : Service() {
         if (errors.length() > 30) JobState.log("  ... 외 ${errors.length() - 30}개")
     }
 
-    private fun translate(gameId: Long, name: String, retryReview: Boolean) {
-        val engineName = prefs.engine
+    /** 캐릭터 분석 (로컬 모델). 끝까지 갔으면 true. */
+    private fun analyze(gameId: Long): Boolean {
+        updateNotification("캐릭터 분석 중", 0, 0)
+        val local = LocalLlm.create(this, prefs) { JobState.log(it) }
+        if (local == null) {
+            JobState.log("캐릭터 분석에는 로컬 모델이 필요합니다. 설정에서 GGUF 모델을 먼저 지정하세요.")
+            return false
+        }
+        val control = object : PyControl {
+            override fun isStopped(): Boolean = JobState.stopRequested.get()
+            override fun log(msg: String) = JobState.log(msg)
+            override fun progress(done: Int, total: Int) {
+                updateNotification("캐릭터 분석 중", done, total)
+            }
+        }
+        return try {
+            val r = engine.analyze(gameId, JSONObject().put("min_lines", 5).put("max_characters", 40), control, local)
+            if (r.optString("status") == "error") JobState.log("중단 사유: ${r.optString("message")}")
+            JobState.dbChanged()
+            r.optString("status") == "finished"
+        } finally {
+            local.close()
+        }
+    }
+
+    private fun translate(gameId: Long, name: String, retryReview: Boolean, forceLocal: Boolean = false) {
+        val engineName = if (forceLocal) "local" else prefs.engine
         val opts = prefs.translateOpts(engineName, retryReview)
         val needLocal = engineName == "local" || opts.has("fallback")
         val local = if (needLocal) LocalLlm.create(this, prefs) { JobState.log(it) } else null

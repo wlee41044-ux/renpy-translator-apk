@@ -75,6 +75,33 @@ def run(db_path, game_id, engine="google", opts_json="{}", control=None, local_b
         con.close()
         return json.dumps({"status": "error", "message": "엔진 생성 실패: %s" % e})
     tr.log = ctl.log
+    ctx_index = {}
+
+    def prepare(t):
+        """LLM 번역기에는 캐릭터 분석 결과를 붙이고, 앞 대사를 보여 주기 위한 색인을 만든다."""
+        if not getattr(t, "uses_meta", False):
+            return
+        profiles = db.get_profiles(con, game_id) if opts.get("use_profiles", True) else {}
+        t.story = profiles.pop(db.STORY_KEY, "")
+        t.profiles = profiles
+        if not ctx_index:
+            ctx_index.update(db.dialogue_index(con, game_id))
+        if profiles or t.story:
+            ctl.log("캐릭터 분석 %d명%s 을 번역에 사용" % (len(profiles), " + 작품 요약" if t.story else ""))
+
+    def make_meta(rows):
+        metas = []
+        for r in rows:
+            ctx = []
+            if r.get("kind") == "dialogue":
+                for back in (2, 1):
+                    got = ctx_index.get((r.get("file"), (r.get("seq") or 0) - back))
+                    if got:
+                        ctx.append(got)
+            metas.append({"speaker": r.get("speaker") or "", "context": ctx})
+        return metas
+
+    prepare(tr)
     if opts.get("retry_review"):
         db.reset_status(con, game_id, db.REVIEW)
 
@@ -138,8 +165,9 @@ def run(db_path, game_id, engine="google", opts_json="{}", control=None, local_b
 
             t0 = time.monotonic()
             try:
+                extra = {"meta": make_meta(todo)} if getattr(tr, "uses_meta", False) else {}
                 outs = tr.translate_batch([p.masked for p in masks], source_lang, target_lang,
-                                          should_stop=ctl.stopped)
+                                          should_stop=ctl.stopped, **extra)
             except Stopped as e:
                 part = getattr(e, "partial", None)
                 if part:
@@ -160,6 +188,7 @@ def run(db_path, game_id, engine="google", opts_json="{}", control=None, local_b
                     try:
                         tr = create(engines[1], opts.get(engines[1], {}), local_bridge)
                         tr.log = ctl.log
+                        prepare(tr)
                         ctl.log("대체 엔진으로 전환: %s" % tr.name)
                         continue
                     except Exception as e2:

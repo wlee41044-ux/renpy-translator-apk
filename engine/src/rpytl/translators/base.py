@@ -23,6 +23,10 @@ class Translator:
     max_batch = 20
     # 동시에 처리할 수 있는 요청 수 (runner 가 한 번에 가져올 줄 수 = max_batch * parallel)
     parallel = 1
+    # True 이면 runner 가 화자/앞뒤 대사/캐릭터 분석(profiles, story)을 넘겨 준다 (LLM 번역기)
+    uses_meta = False
+    profiles = None
+    story = ""
 
     @property
     def batch_lines(self):

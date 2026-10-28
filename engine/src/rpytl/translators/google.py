@@ -303,7 +303,7 @@ class GoogleTranslator(Translator):
         return (self._translate_chunk(chunk[:mid], sl, tl, should_stop)
                 + self._translate_chunk(chunk[mid:], sl, tl, should_stop))
 
-    def translate_batch(self, texts, source_lang, target_lang, should_stop=lambda: False):
+    def translate_batch(self, texts, source_lang, target_lang, should_stop=lambda: False, meta=None):
         """실패하면 예외에 .partial (texts 와 같은 길이, 못 한 곳은 None) 을 붙여 던진다.
         이미 성공한 청크의 번역을 버리지 않고 runner 가 저장하게 하기 위함."""
         chunks = list(self._chunks(texts))

@@ -44,15 +44,16 @@ def collect_items(game_dir, tlid_only_say=False, py_strings=True):
                 tlid_only_say = ov
     items, errors, used = [], [], []
     global_ids = set()
+    chars = {}      # 변수명 → 화자 이름: 정의가 다른 파일에 있어도 마지막에 한꺼번에 적용한다
     for base in sorted(sources, key=_load_key):
         rel = sources[base]
         path = os.path.join(game_dir, rel)
         try:
             if rel in texts:
-                got = extract_from_rpy(texts[rel], base, tlid_only_say, global_ids, py_strings)
+                got = extract_from_rpy(texts[rel], base, tlid_only_say, global_ids, py_strings, chars)
             else:
                 with open(path, "rb") as f:
-                    got = extract_from_rpyc(f.read(), base, global_ids, py_strings)
+                    got = extract_from_rpyc(f.read(), base, global_ids, py_strings, chars)
         except (RpycError, RecursionError, ValueError) as e:
             errors.append("%s: %s" % (rel, e))
             continue
@@ -61,6 +62,9 @@ def collect_items(game_dir, tlid_only_say=False, py_strings=True):
             continue
         used.append(rel)
         items.extend(got)
+    for it in items:
+        if it.kind == DIALOGUE and it.speaker in chars:
+            it.speaker = chars[it.speaker]
     return dedupe(items), used, errors
 
 

@@ -12,6 +12,7 @@ Ren'Py 를 import 하지 않는다. 피클 안의 renpy.* 클래스는 전부 �
 
 import ast as pyast
 import pickle
+import re
 import struct
 import zlib
 
@@ -335,9 +336,22 @@ def _stmt_code(node):
 _TEXT_DISPLAYABLES = ("Text", "_text", "_textbutton", "_label", "textbutton", "text", "label")
 
 
+_CHAR_CALL_RE = re.compile(
+    r"""(?:Dynamic)?Character\(\s*(?:_\(\s*)?(?P<q>["'])(?P<name>.*?)(?P=q)""", re.S)
+_CHAR_ASSIGN_RE = re.compile(
+    r"""^[ \t]*(?P<var>[A-Za-z_]\w*)\s*=\s*[\w.]*(?:Dynamic)?Character\(\s*(?:_\(\s*)?(?P<q>["'])(?P<name>.*?)(?P=q)""",
+    re.M)
+
+
+def clean_character_name(name):
+    """Character("{color=#f00}Eileen{/color}") 같은 표시 이름에서 태그를 뗀 사람이 읽는 이름."""
+    return re.sub(r"\{[^{}]*\}", "", name or "").strip()
+
+
 class Extractor:
-    def __init__(self, relpath, global_ids=None):
+    def __init__(self, relpath, global_ids=None, chars=None):
         self.file = relpath
+        self.chars = chars if chars is not None else {}   # 변수명 → 화자 이름 (파일 사이에 공유)
         self.items = []
         self.global_ids = global_ids if global_ids is not None else set()
         self.alloc = IdentifierAllocator(global_ids=self.global_ids)
@@ -387,6 +401,17 @@ class Extractor:
         self.seen_nodes.add(id(node))
         c = _cls(node)
 
+        if c == "Define":
+            var = _text(_get(node, "varname"))
+            code = _get(node, "code")
+            src = _get(code, "source") if code is not None else None
+            if src is None and code is not None:
+                st = _get(code, "_state")
+                src = st[1] if isinstance(st, tuple) and len(st) > 1 else None
+            m = _CHAR_CALL_RE.search(_text(src) or "") if src else None
+            if var and m:
+                self.chars[var] = clean_character_name(m.group("name"))
+            return
         if c == "Label":
             # Ren'Py 8.4+ 는 name 을 _name 으로 저장하기도 한다 (unrpyc renpycompat 참고)
             name = _text(_get(node, "name") or _get(node, "_name")) or ""
@@ -468,6 +493,8 @@ def _scan_code_strings(root, extractor, py_strings=True):
             st = d.get("_state")
             src = st[1] if isinstance(st, tuple) and len(st) > 1 else d.get("source")
             if isinstance(src, str):
+                for m in _CHAR_ASSIGN_RE.finditer(_text(src)):
+                    extractor.chars.setdefault(m.group("var"), clean_character_name(m.group("name")))
                 found.extend(scan_marked_strings(_text(src)))
                 if py_strings:
                     found.extend(python_literals(_text(src)))
@@ -494,10 +521,10 @@ def _literal_string(src):
     return v if isinstance(v, str) else None
 
 
-def extract_from_rpyc(data, relpath, global_ids=None, py_strings=True):
+def extract_from_rpyc(data, relpath, global_ids=None, py_strings=True, chars=None):
     """rpyc 바이트 → [Item]"""
     _, stmts = load_rpyc_bytes(data)
-    ex = Extractor(relpath, global_ids)
+    ex = Extractor(relpath, global_ids, chars)
     ex.walk_block(stmts)
     _scan_code_strings(stmts, ex, py_strings)
     return ex.items

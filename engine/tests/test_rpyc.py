@@ -96,3 +96,25 @@ def test_defaultdict_and_containers_in_pickle():
     say = f.TranslateSay(("s.rpy", 2), who="e", what="Hi.", identifier="start_00000001", language=None)
     items = rpyc.extract_from_rpyc(f.make_rpyc([node, say]), "s.rpy")
     assert [i.source for i in items] == ["Hi."]
+
+
+def test_speaker_names_resolved_from_character_definitions():
+    """rpyc 에서는 화자가 변수명(e)이라 Character("Eileen") 정의에서 이름을 찾아 바꿔야 한다. 정의가 다른 파일에 있어도."""
+    import os
+    import tempfile
+    from rpytl import scan
+    define_e = f.Define(("a.rpy", 1), varname="e", code=f.PyCode('Character(_("Eileen"), color="#fff")'))
+    py_block = f.Init(("a.rpy", 2), block=[f.Define(("a.rpy", 3), varname="x", code=f.PyCode(
+        'm = Character("{color=#f00}Mia{/color}", who_color="#f00")\nzzz = 1'))])
+    defs = f.make_rpyc([f.Init(("defs.rpy", 1), block=[define_e]), py_block])
+    say1 = f.TranslateSay(("s.rpy", 3), who="e", what="Hello there.", identifier="start_00000001", language=None)
+    say2 = f.TranslateSay(("s.rpy", 4), who="m", what="Hi, Eileen.", identifier="start_00000002", language=None)
+    say3 = f.TranslateSay(("s.rpy", 5), who="narr", what="Silence.", identifier="start_00000003", language=None)
+    script = f.make_rpyc([f.Label(("s.rpy", 1), name="start", block=[], hide=False), say1, say2, say3])
+    d = tempfile.mkdtemp()
+    open(os.path.join(d, "defs.rpyc"), "wb").write(defs)       # 파일 이름순으로는 defs 가 script 보다 먼저지만
+    open(os.path.join(d, "a_script.rpyc"), "wb").write(script)  # 일부러 정의가 뒤에 읽히는 경우도 확인
+    items, _, errors = scan.collect_items(d)
+    assert errors == []
+    spk = {i.source: i.speaker for i in items if i.kind == DIALOGUE}
+    assert spk == {"Hello there.": "Eileen", "Hi, Eileen.": "Mia", "Silence.": "narr"}

@@ -13,8 +13,8 @@ android {
         applicationId = "com.wlee41044.rpytl"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.4.0"
 
         ndk {
             // 갤럭시 S24 = arm64-v8a. x86_64 는 에뮬레이터용.
@@ -51,6 +51,8 @@ android {
 
     buildFeatures {
         compose = true
+        aidl = true
+        buildConfig = true
     }
 }
 
@@ -82,4 +84,7 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.1.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    // Android/data/<게임>/files/game 에 번역 파일을 쓰기 위한 shell 권한 (Shizuku 앱 필요)
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
 }

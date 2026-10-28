@@ -23,7 +23,9 @@ import com.wlee41044.rpytl.Prefs
 import com.wlee41044.rpytl.PyControl
 import com.wlee41044.rpytl.R
 import com.wlee41044.rpytl.llm.LocalLlm
+import com.wlee41044.rpytl.apps.AppGame
 import com.wlee41044.rpytl.saf.GameFolder
+import com.wlee41044.rpytl.shizuku.ShizukuFs
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -41,6 +43,8 @@ class TranslateService : Service() {
         const val EXTRA_GAME = "game"
         const val EXTRA_RETRY_REVIEW = "retry_review"
         private const val CHANNEL = "jobs"
+        /** games.folder_uri 가 이 접두어면 설치된 앱 게임 (apk:<패키지>) */
+        const val APK_PREFIX = "apk:"
         private const val NOTIF_ID = 1
 
         fun start(ctx: Context, action: String, gameId: Long, retryReview: Boolean = false) {
@@ -146,25 +150,38 @@ class TranslateService : Service() {
         acquireWakeLock()
         try {
             when (action) {
-                ACTION_SCAN -> scan(game.id, Uri.parse(game.folderUri), game.language)
+                ACTION_SCAN -> scan(game.id, game.folderUri, game.language)
                 ACTION_TRANSLATE -> translate(game.id, game.name, retryReview)
-                ACTION_EXPORT -> export(game.id, Uri.parse(game.folderUri), game.language)
+                ACTION_EXPORT -> export(game.id, game.folderUri, game.language)
             }
         } finally {
             releaseWakeLock()
         }
     }
 
-    private fun scan(gameId: Long, uri: Uri, language: String) {
+    private val logControl = object : PyControl {
+        override fun isStopped(): Boolean = JobState.stopRequested.get()
+        override fun log(msg: String) = JobState.log(msg)
+        override fun progress(done: Int, total: Int) {}
+    }
+
+    private fun scan(gameId: Long, location: String, language: String) {
         JobState.log("스캔 시작")
         updateNotification("스캔 중", 0, 0)
-        val folder = GameFolder(contentResolver, uri)
-        val n = folder.importScripts(engine, gameId, language) { JobState.log(it) }
+        val n: Int
+        var versionText: String? = null
+        if (location.startsWith(APK_PREFIX)) {
+            n = AppGame(this, location.removePrefix(APK_PREFIX)).importScripts(engine, gameId, language, logControl)
+        } else {
+            val folder = GameFolder(contentResolver, Uri.parse(location))
+            n = folder.importScripts(engine, gameId, language) { JobState.log(it) }
+            versionText = folder.renpyVersionText()
+        }
         if (n == 0) {
-            JobState.log("스크립트(.rpa/.rpy/.rpyc)를 찾지 못했습니다. game 폴더 또는 그 상위 폴더를 골랐는지 확인하세요.")
+            JobState.log("스크립트(.rpa/.rpy/.rpyc)를 찾지 못했습니다.")
             return
         }
-        val r = engine.scan(gameId, folder.renpyVersionText())
+        val r = engine.scan(gameId, versionText)
         val c = r.getJSONObject("counts")
         JobState.log(
             "스캔 완료 (Ren'Py ${r.optString("renpy_version", "?")}): 항목 ${r.getInt("items")}개 — " +
@@ -198,10 +215,14 @@ class TranslateService : Service() {
         }
     }
 
-    private fun export(gameId: Long, uri: Uri, language: String) {
+    private fun export(gameId: Long, location: String, language: String) {
         JobState.log("출력 파일 생성 시작")
         updateNotification("출력 파일 생성 중", 0, 0)
-        val folder = GameFolder(contentResolver, uri)
+        if (location.startsWith(APK_PREFIX)) {
+            exportToApp(gameId, location.removePrefix(APK_PREFIX), language)
+            return
+        }
+        val folder = GameFolder(contentResolver, Uri.parse(location))
         val fontUri = prefs.fontUri(gameId)
         var fontName: String? = null
         if (fontUri != null) {
@@ -226,6 +247,35 @@ class TranslateService : Service() {
         JobState.log(
             "출력 완료: 파일 $n 개 → game/tl/$language/rpytl/ (대사 파일 ${info.getInt("dialogue_files")}개, " +
                 "문자열 ${info.getInt("strings")}개, 기존 번역과 겹쳐 제외 ${info.getInt("skipped_existing")}개)"
+        )
+    }
+
+    private fun fontExt(fontUri: String): String {
+        val display = runCatching {
+            contentResolver.query(Uri.parse(fontUri), arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+        }.getOrNull() ?: ""
+        return if (display.lowercase().endsWith(".otf")) "otf" else "ttf"
+    }
+
+    private fun exportToApp(gameId: Long, pkg: String, language: String) {
+        val st = ShizukuFs.status()
+        if (st != ShizukuFs.Status.READY) {
+            JobState.log("출력 실패: ${st.label}. Shizuku 를 켜고 앱에서 권한을 허용한 뒤 다시 시도하세요.")
+            return
+        }
+        val fontUri = prefs.fontUri(gameId)
+        val fontName = fontUri?.let { "font.${fontExt(it)}" }
+        val existingTl = java.io.File(engine.workDir(gameId), "tl/$language").absolutePath
+        val r = engine.export(gameId, fontName?.let { "tl/$language/rpytl/$it" }, prefs.forceLanguage, existingTl)
+        val info = r.getJSONObject("info")
+        val n = AppGame(this, pkg).writeOutput(engine.outDir(gameId), r, fontUri?.let { Uri.parse(it) }, fontName) {
+            JobState.log(it)
+        }
+        JobState.log(
+            "출력 완료: 파일 $n 개 → Android/data/$pkg/files/game/tl/$language/rpytl/ " +
+                "(대사 파일 ${info.getInt("dialogue_files")}개, 문자열 ${info.getInt("strings")}개, " +
+                "기존 번역과 겹쳐 제외 ${info.getInt("skipped_existing")}개). 게임을 완전히 종료 후 다시 실행하세요."
         )
     }
 

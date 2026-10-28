@@ -53,6 +53,18 @@ def extract_archive_path(path, dest):
         return _j(rpa.extract_scripts(f, dest))
 
 
+def extract_apks(apk_paths_json, work_game_dir, language=None, control=None):
+    """설치된 앱의 APK 경로 목록(JSON 배열)에서 스크립트를 작업 폴더로 추출."""
+    from . import apk
+    log = (lambda m: control.log(m)) if control is not None else None
+    return _j(apk.extract_scripts(json.loads(apk_paths_json), work_game_dir, language, log))
+
+
+def is_renpy_apk(path):
+    from . import apk
+    return apk.is_renpy_apk(path)
+
+
 def scan_game(db_path, game_id, work_game_dir, renpy_version_text=None):
     """renpy_version_text: 게임의 renpy/vc_version.py 또는 renpy/__init__.py 내용 (없으면 None)."""
     ver = parse_renpy_version(renpy_version_text)

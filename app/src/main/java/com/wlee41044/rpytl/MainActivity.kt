@@ -42,6 +42,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -57,7 +58,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.wlee41044.rpytl.apps.RenpyApps
 import com.wlee41044.rpytl.saf.GameFolder
+import com.wlee41044.rpytl.shizuku.ShizukuFs
+import rikka.shizuku.Shizuku
 import com.wlee41044.rpytl.service.JobState
 import com.wlee41044.rpytl.service.TranslateService
 import kotlinx.coroutines.Dispatchers
@@ -92,6 +96,23 @@ private fun MainScreen(engine: Engine, prefs: Prefs) {
     val log by JobState.log.collectAsState()
     val dbVersion by JobState.dbVersion.collectAsState()
     var showSettings by remember { mutableStateOf(false) }
+    var found by remember { mutableStateOf<List<RenpyApps.App>?>(null) }
+    var searching by remember { mutableStateOf(false) }
+    var shizuku by remember { mutableStateOf(ShizukuFs.status()) }
+
+    DisposableEffect(Unit) {
+        val listener = Shizuku.OnRequestPermissionResultListener { _, _ -> shizuku = ShizukuFs.status() }
+        val alive = Shizuku.OnBinderReceivedListener { shizuku = ShizukuFs.status() }
+        val dead = Shizuku.OnBinderDeadListener { shizuku = ShizukuFs.status() }
+        Shizuku.addRequestPermissionResultListener(listener)
+        Shizuku.addBinderReceivedListenerSticky(alive)
+        Shizuku.addBinderDeadListener(dead)
+        onDispose {
+            Shizuku.removeRequestPermissionResultListener(listener)
+            Shizuku.removeBinderReceivedListener(alive)
+            Shizuku.removeBinderDeadListener(dead)
+        }
+    }
 
     fun ui(msg: String) = JobState.log(msg)
 
@@ -151,13 +172,71 @@ private fun MainScreen(engine: Engine, prefs: Prefs) {
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        Text("RenPy 번역기", fontWeight = FontWeight.Bold, fontSize = 20.sp)
+
+        // ---- Shizuku (Android/data 에 번역 파일 쓰기용)
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("RenPy 번역기", fontWeight = FontWeight.Bold, fontSize = 20.sp, modifier = Modifier.weight(1f))
-            OutlinedButton(onClick = { pickFolder.launch(null) }) { Text("게임 추가") }
+            Text(
+                shizuku.label, Modifier.weight(1f), fontSize = 13.sp,
+                color = if (shizuku == ShizukuFs.Status.READY) Color(0xFF80E080) else Color(0xFFFFB060),
+            )
+            if (shizuku == ShizukuFs.Status.NO_PERMISSION) {
+                OutlinedButton(onClick = { ShizukuFs.requestPermission() }) { Text("권한 요청") }
+            }
+            OutlinedButton(onClick = { shizuku = ShizukuFs.status() }) { Text("새로고침") }
+        }
+
+        // ---- 설치된 Ren'Py 게임 찾기
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Button(enabled = !searching, onClick = {
+                searching = true
+                scope.launch {
+                    val list = withContext(Dispatchers.IO) {
+                        runCatching { RenpyApps.find(ctx) }.getOrElse { ui("앱 검색 실패: ${it.message}"); emptyList() }
+                    }
+                    found = list
+                    searching = false
+                    ui("설치된 Ren'Py 게임 ${list.size}개")
+                }
+            }) { Text(if (searching) "찾는 중…" else "설치된 게임 찾기") }
+            OutlinedButton(onClick = { pickFolder.launch(null) }) { Text("폴더로 추가") }
+        }
+        found?.let { list ->
+            val added = games.map { it.folderUri }.toSet()
+            for (app in list) {
+                val loc = TranslateService.APK_PREFIX + app.pkg
+                Row(
+                    Modifier.fillMaxWidth().background(Color(0xFF1A2420)).padding(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(app.label)
+                        Text("${app.pkg}  ${app.sizeMb}MB", fontSize = 11.sp)
+                    }
+                    if (loc in added) {
+                        Text("추가됨", fontSize = 12.sp)
+                    } else {
+                        OutlinedButton(onClick = {
+                            scope.launch {
+                                val id = withContext(Dispatchers.IO) {
+                                    runCatching { engine.addGame(app.label, loc, "korean") }
+                                        .onFailure { ui("추가 실패: ${it.message}") }.getOrNull()
+                                }
+                                if (id != null) {
+                                    ui("${app.label} 추가됨. '스캔'을 누르세요.")
+                                    selected = id
+                                    reload()
+                                }
+                            }
+                        }) { Text("추가") }
+                    }
+                }
+            }
         }
 
         // ---- 게임 목록
-        if (games.isEmpty()) Text("게임 폴더를 추가하세요 (game 폴더 또는 그 상위 폴더).")
+        HorizontalDivider()
+        if (games.isEmpty()) Text("'설치된 게임 찾기'로 Ren'Py 게임 앱을 추가하세요.")
         for (g in games) {
             val sel = g.id == selected
             Column(
@@ -166,7 +245,8 @@ private fun MainScreen(engine: Engine, prefs: Prefs) {
                     .clickable { selected = g.id; stats = g.stats }
                     .padding(8.dp)
             ) {
-                Text("${g.name}  [${g.language}]", fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal)
+                val kind = if (g.folderUri.startsWith(TranslateService.APK_PREFIX)) "앱" else "폴더"
+                Text("${g.name}  [${g.language}] ($kind)", fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal)
                 Text(
                     "완료 ${g.stats.done}/${g.stats.total}  검수 ${g.stats.review}  미사용 ${g.stats.unused}",
                     fontSize = 12.sp,

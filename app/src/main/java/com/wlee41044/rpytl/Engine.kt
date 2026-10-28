@@ -44,6 +44,12 @@ class Engine(context: Context) {
     fun extractArchiveFd(fd: Int, gameId: Long): JSONArray =
         JSONArray(py.callAttr("extract_archive_fd", fd, workDir(gameId).absolutePath).toString())
 
+    fun extractApks(apks: List<String>, gameId: Long, language: String, control: PyControl): JSONObject =
+        JSONObject(
+            py.callAttr("extract_apks", JSONArray(apks).toString(), workDir(gameId).absolutePath, language, control)
+                .toString()
+        )
+
     fun scan(gameId: Long, renpyVersionText: String?): JSONObject =
         JSONObject(py.callAttr("scan_game", dbPath, gameId, workDir(gameId).absolutePath, renpyVersionText).toString())
 

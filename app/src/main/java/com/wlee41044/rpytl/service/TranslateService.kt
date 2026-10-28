@@ -131,13 +131,16 @@ class TranslateService : Service() {
         super.onDestroy()
     }
 
+    /**
+     * 작업 중 CPU 가 잠들지 않게 잡는다. 며칠씩 걸리는 번역에서도 끊기지 않도록 시간 제한(2시간)을 두고
+     * 진행 상황이 올 때마다(updateNotification) 다시 잡아 연장한다. 비정상 종료 시 영원히 잡히는 것도 막는다.
+     */
     private fun acquireWakeLock() {
-        if (wakeLock?.isHeld == true) return
-        val pm = getSystemService(PowerManager::class.java)
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "rpytl:job").apply {
-            setReferenceCounted(false)
-            acquire(12 * 60 * 60 * 1000L)
-        }
+        val wl = wakeLock ?: getSystemService(PowerManager::class.java)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "rpytl:job")
+            .apply { setReferenceCounted(false) }
+            .also { wakeLock = it }
+        wl.acquire(2 * 60 * 60 * 1000L)   // 이미 잡혀 있으면 시간만 갱신된다 (reference counted = false)
     }
 
     private fun releaseWakeLock() {
@@ -346,6 +349,7 @@ class TranslateService : Service() {
     }
 
     private fun updateNotification(text: String, done: Int, total: Int) {
+        if (JobState.running.value != null) runCatching { acquireWakeLock() }   // 장시간 작업: 잠금 연장
         val now = SystemClock.elapsedRealtime()
         if (now - lastNotify < 1000 && total > 0 && done < total) return
         lastNotify = now

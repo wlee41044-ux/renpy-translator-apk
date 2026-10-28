@@ -244,6 +244,7 @@ class TranslateService : Service() {
             "출력 완료: 파일 $n 개 → game/tl/$language/rpytl/ (대사 파일 ${info.getInt("dialogue_files")}개, " +
                 "문자열 ${info.getInt("strings")}개, 기존 번역과 겹쳐 제외 ${info.getInt("skipped_existing")}개)"
         )
+        logUnsafe(info)
     }
 
     /**
@@ -268,6 +269,16 @@ class TranslateService : Service() {
         } catch (e: Exception) {
             JobState.log("폰트 준비 실패: ${e.message}")
             null
+        }
+    }
+
+    private fun logUnsafe(info: org.json.JSONObject) {
+        val n = info.optInt("unsafe_moved_to_review")
+        if (n > 0) {
+            JobState.log(
+                "주의: 태그/변수 구조가 원문과 달라 게임을 멈출 수 있는 번역 ${n}줄을 출력에서 뺐습니다 " +
+                    "(검수필요로 이동, 게임에서는 원문 표시). '검수필요 보기'로 확인하세요."
+            )
         }
     }
 
@@ -298,6 +309,7 @@ class TranslateService : Service() {
                 "(대사 파일 ${info.getInt("dialogue_files")}개, 문자열 ${info.getInt("strings")}개, " +
                 "기존 번역과 겹쳐 제외 ${info.getInt("skipped_existing")}개). 게임을 완전히 종료 후 다시 실행하세요."
         )
+        logUnsafe(info)
     }
 
     private fun updateNotification(text: String, done: Int, total: Int) {

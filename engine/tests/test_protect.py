@@ -50,3 +50,85 @@ def test_untranslatable():
 def test_check_translation():
     assert check_translation("Hi [a] {b}x{/b}", "{b}x{/b} [a] 안녕")
     assert not check_translation("Hi [a]", "안녕")
+
+
+# ---------------------------------------------------------------- 구조 검사 (게임이 죽는 번역 막기)
+
+from rpytl.protect import structure_problem  # noqa: E402
+
+
+def test_bracket_escape_lost_is_caught():
+    """실제 사고: 원문 '[[Battle Victory] ...' 가 번역에서 '[전투 승리] ...' 가 되어 Ren'Py 가
+    '전투 승리' 를 코드로 실행하다 SyntaxError 로 멈췄다."""
+    src = "[[Battle Victory] You completely defeated [current_enemy.name]!"
+    bad = "[전투 승리] [current_enemy.name]를 완전히 물리쳤습니다!"
+    good = "[[전투 승리] [current_enemy.name]를 완전히 물리쳤습니다!"
+    assert structure_problem(src, bad) is not None
+    assert structure_problem(src, good) is None
+
+
+def test_translator_added_brackets_or_braces_are_caught():
+    assert structure_problem("Hello", "[안녕]") is not None
+    assert structure_problem("Hello", "안녕 {") is not None
+    assert structure_problem("100% done", "100% 완료") is None
+    assert structure_problem("Hi [name]", "안녕 [name]") is None
+    assert structure_problem("Hi [name]", "안녕 [이름]") is not None
+    assert structure_problem("{b}Hi{/b}", "{b}안녕{/b}") is None
+    assert structure_problem("{b}Hi{/b}", "{b}안녕") is not None
+
+
+def test_runner_sends_broken_structure_to_review(tmp_path, monkeypatch):
+    import json
+    from rpytl import db, pipeline, runner
+    g = tmp_path / "g"
+    g.mkdir()
+    (g / "a.rpy").write_text('label a:\n    "[[Battle Victory] Defeated [enemy]!"\n', encoding="utf-8")
+    dbp = str(tmp_path / "t.db")
+    gid = pipeline.add_game(dbp, "T", "u")
+    pipeline.scan_game(dbp, gid, str(g))
+
+    class FakeGoogle:
+        name, max_batch, parallel = "google", 10, 1
+        log = lambda self, m: None  # noqa: E731
+
+        def translate_batch(self, texts, *a, **k):
+            # 플레이스홀더는 모두 지켰지만 번역기가 자기 멋대로 [..] 를 끼워 넣은 번역
+            return ["ZQ0Z전투 승리] ZQ1Z를 물리쳤다! [추가]" for _ in texts]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(runner, "create", lambda *a, **k: FakeGoogle())
+    r = json.loads(runner.run(dbp, gid, "google", "{}", None))
+    con = db.connect(dbp)
+    assert r["status"] == "finished" and r["review"] == 1
+    rv = db.review_list(con, gid)
+    assert "구조 불일치" in rv[0]["note"]
+
+
+def test_export_moves_already_saved_unsafe_translations_to_review(tmp_path):
+    import json
+    from rpytl import db, pipeline
+    g = tmp_path / "g"
+    g.mkdir()
+    (g / "a.rpy").write_text('label a:\n    "[[Battle Victory] Defeated [enemy]!"\n    "Safe line."\n',
+                             encoding="utf-8")
+    dbp = str(tmp_path / "t.db")
+    gid = pipeline.add_game(dbp, "T", "u")
+    pipeline.scan_game(dbp, gid, str(g))
+    con = db.connect(dbp)
+    for t in db.pending_texts(con, gid, 10):
+        tr = "[전투 승리] [enemy]를 물리쳤다!" if "Battle" in t["source"] else "안전한 줄."
+        db.set_translation(con, gid, t["src_hash"], tr, "google")
+    res = json.loads(pipeline.export(dbp, gid, str(tmp_path / "out")))
+    assert res["info"]["unsafe_moved_to_review"] == 1
+    out = (tmp_path / "out/tl/korean/rpytl/a.rpy").read_text(encoding="utf-8")
+    assert "안전한 줄." in out and "전투 승리" not in out
+    assert db.stats(con, gid)["review"] == 1
+
+
+def test_percent_followed_by_space_is_not_a_format_spec():
+    p = protect("50% damage and 100% done")
+    assert p.tokens == []
+    p = protect("HP: %d / %(max)s, 5%s")
+    assert p.tokens == ["%d", "%(max)s", "%s"]

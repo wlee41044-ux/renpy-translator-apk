@@ -12,7 +12,7 @@ import json
 import time
 
 from . import db
-from .protect import RestoreError, protect, restore
+from .protect import RestoreError, protect, restore, structure_problem
 from .translators import RateLimited, TranslatorError, create
 from .translators.base import Stopped
 
@@ -135,6 +135,9 @@ def run(db_path, game_id, engine="google", opts_json="{}", control=None, local_b
                         text = restore(out, p.tokens)
                         if not text.strip():
                             raise RestoreError("empty translation")
+                        problem = structure_problem(row["source"], text)
+                        if problem:
+                            raise RestoreError(problem)
                         db.set_translation(con, game_id, row["src_hash"], text, tr.name)
                         result["translated"] += 1
                     except RestoreError as e:

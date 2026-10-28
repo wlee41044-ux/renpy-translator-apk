@@ -15,8 +15,8 @@ _TOKEN_RE = re.compile(
     r"\{\{|\[\["                                          # 이스케이프된 괄호
     r"|\{[^{}]*\}"                                         # 텍스트 태그
     r"|\[[^\[\]]*\]"                                       # 보간
-    r"|%\([^()]*\)[-#0 +]*\d*(?:\.\d+)?[diouxXeEfFgGcrsa]" # %(name)s
-    r"|%[-#0 +]*\d*(?:\.\d+)?[diouxXeEfFgGcrsa]"            # %s %d %.2f
+    r"|%\([^()]*\)[-#0+]*\d*(?:\.\d+)?[diouxXeEfFgGcrsa]" # %(name)s
+    r"|%[-#0+]*\d*(?:\.\d+)?[diouxXeEfFgGcrsa]"            # %s %d %.2f
     r"|%%"
     r"|\n"
 )
@@ -82,8 +82,31 @@ def restore(translated, tokens):
     return out
 
 
-def check_translation(source, translation):
-    """번역문이 원문의 보호 토큰을 같은 개수로 가지고 있는지 (수동 번역 검증 등)."""
+_BRACKETS = "[]{}%"
+
+
+def structure_problem(source, translation):
+    """번역문이 원문과 같은 Ren'Py 태그/변수 구조인지 검사. 문제가 있으면 사유 문자열, 없으면 None.
+
+    Ren'Py 는 번역문 안의 [..] 를 코드로 실행하고 {..} 를 텍스트 태그로 해석하므로, 구조가 달라진 번역은
+    번역이 안 되는 정도가 아니라 게임을 멈추게 한다 (예: 원문 "[[Victory] ..." → 번역 "[승리] ...").
+    1) 보호 토큰(태그, [변수], %s, [[ 등)의 종류와 개수가 같아야 하고
+    2) 토큰을 뺀 나머지의 괄호 글자 개수도 같아야 한다.
+    """
     a = sorted(m.group(0) for m in _TOKEN_RE.finditer(source))
     b = sorted(m.group(0) for m in _TOKEN_RE.finditer(translation))
-    return a == b
+    if a != b:
+        only_src = [t for t in a if t not in b][:3]
+        only_tr = [t for t in b if t not in a][:3]
+        return "태그/변수 구조 불일치 (원문에만 %r, 번역에만 %r)" % (only_src, only_tr)
+    rs = _TOKEN_RE.sub("", source)
+    rt = _TOKEN_RE.sub("", translation)
+    for ch in _BRACKETS:
+        if rs.count(ch) != rt.count(ch):
+            return "괄호 %r 개수 불일치 (원문 %d, 번역 %d)" % (ch, rs.count(ch), rt.count(ch))
+    return None
+
+
+def check_translation(source, translation):
+    """번역문이 원문과 같은 태그/변수 구조인지 (수동 번역 검증 등)."""
+    return structure_problem(source, translation) is None

@@ -178,6 +178,25 @@ def reset_status(con, game_id, from_status, to_status=PENDING):
                 (to_status, now(), game_id, from_status))
 
 
+def revalidate(con, game_id, check):
+    """완료(done) 번역 중 check(source, translation) 이 문제 사유를 돌려주는 것을 검수필요로 돌린다.
+    반환: 바뀐 줄 수. 이미 저장된 번역을 다시 번역하지 않고 안전하게 걸러내는 용도."""
+    bad = []
+    for r in con.execute("""SELECT src_hash, source, translation FROM texts
+                            WHERE game_id = ? AND status = 'done' AND translation IS NOT NULL""", (game_id,)):
+        if r["translation"] == r["source"]:
+            continue
+        why = check(r["source"], r["translation"])
+        if why:
+            bad.append((why, r["src_hash"]))
+    if bad:
+        with tx(con):
+            for why, h in bad:
+                con.execute("""UPDATE texts SET status = 'review', note = ?, updated_at = ?
+                               WHERE game_id = ? AND src_hash = ?""", (why, now(), game_id, h))
+    return len(bad)
+
+
 def entries_for_output(con, game_id):
     return [dict(r) for r in con.execute("""
         SELECT e.kind, e.ident, e.file, e.line, e.seq, e.tmpl, e.speaker,

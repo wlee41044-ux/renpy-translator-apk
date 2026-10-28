@@ -5,6 +5,7 @@ import os
 import shutil
 
 from . import db, rpa, scan, tlgen
+from .protect import structure_problem
 from .version import parse_renpy_version, tlid_only_considers_say
 
 
@@ -94,10 +95,13 @@ def export(db_path, game_id, out_dir, font=None, force_language=True, existing_t
     os.makedirs(out_dir, exist_ok=True)
     con = open_db(db_path)
     try:
+        # 이미 저장된 번역 중 태그/변수 구조가 깨진 것은 게임을 멈추게 하므로 출력에서 뺀다 (검수필요로 전환)
+        moved = db.revalidate(con, game_id, structure_problem)
         written, info = tlgen.generate(con, game_id, out_dir, font=font or None,
                                        force_language=bool(force_language),
                                        existing_tl_dir=existing_tl_dir or None,
                                        font_mode=font_mode or "fallback")
+        info["unsafe_moved_to_review"] = moved
         return _j({"files": written, "info": info})
     finally:
         con.close()

@@ -21,9 +21,15 @@ class Prefs(context: Context) {
         get() = sp.getString("target_code", "")!!
         set(v) = sp.edit().putString("target_code", v).apply()
 
+    /** 요청 시작 사이 최소 간격 (모든 동시 요청 공통). 예전 키(google_delay_ms)와 의미가 달라 키를 바꿈 */
     var googleDelayMs: Int
-        get() = sp.getInt("google_delay_ms", 1200)
-        set(v) = sp.edit().putInt("google_delay_ms", v).apply()
+        get() = sp.getInt("google_interval_ms", 500)
+        set(v) = sp.edit().putInt("google_interval_ms", v).apply()
+
+    /** 동시에 보낼 요청 수 (제한이 걸리면 자동으로 줄었다가 안정되면 복구) */
+    var googleWorkers: Int
+        get() = sp.getInt("google_workers", 3)
+        set(v) = sp.edit().putInt("google_workers", v).apply()
 
     var googleBatch: Int
         get() = sp.getInt("google_batch", 25)
@@ -79,7 +85,11 @@ class Prefs(context: Context) {
         if (targetCode.isNotBlank()) put("target_code", targetCode.trim())
         put("retry_review", retryReview)
         if (engine == "google" && fallbackLocal) put("fallback", "local")
-        put("google", JSONObject().put("delay", googleDelayMs / 1000.0).put("max_batch", googleBatch))
+        put(
+            "google",
+            JSONObject().put("delay", googleDelayMs / 1000.0).put("max_batch", googleBatch)
+                .put("workers", googleWorkers),
+        )
         put("local", JSONObject().put("max_batch", localBatch).put("cooldown", localCooldownMs / 1000.0))
     }
 }

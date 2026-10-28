@@ -37,8 +37,16 @@ class FakeNet:
 
 
 def make(net, **kw):
-    sleeps = []
-    g = GoogleTranslator(opener=net, sleeper=lambda s, stop: sleeps.append(s), delay=0, **kw)
+    """가짜 시계: sleep 하면 시간이 그만큼 흐른다 (단일 스레드 테스트용)."""
+    sleeps, t = [], [0.0]
+
+    def sleeper(s, stop):
+        sleeps.append(s)
+        t[0] += s
+
+    kw.setdefault("workers", 1)
+    kw.setdefault("delay", 0)
+    g = GoogleTranslator(opener=net, sleeper=sleeper, clock=lambda: t[0], **kw)
     return g, sleeps
 
 
@@ -116,8 +124,8 @@ def _patch_google(monkeypatch, net):
 
     def create(name, opts, bridge=None):
         if name == "google":
-            g = GoogleTranslator(opener=net, sleeper=lambda s, stop: None, delay=0, max_batch=4)
-            return g
+            return GoogleTranslator(opener=net, sleeper=lambda s, stop: None, delay=0, max_batch=4,
+                                    workers=1)
         return orig(name, opts, bridge)
     monkeypatch.setattr(runner, "create", create)
 
@@ -265,3 +273,132 @@ def test_lang_code():
     assert runner.lang_code("korean") == "ko"
     assert runner.lang_code("schinese") == "zh-CN"
     assert runner.lang_code("xx") == "xx"
+
+
+# ---------------------------------------------------------------- 병렬
+
+import threading  # noqa: E402
+import time  # noqa: E402
+
+
+class SlowNet(FakeNet):
+    """요청마다 잠깐 걸리고 동시에 몇 개가 동시에 처리 중인지 기록."""
+
+    def __init__(self, latency=0.05, **kw):
+        super().__init__(**kw)
+        self.latency, self.lock = latency, threading.Lock()
+        self.inflight = self.peak = 0
+
+    def __call__(self, url):
+        with self.lock:
+            self.inflight += 1
+            self.peak = max(self.peak, self.inflight)
+        try:
+            time.sleep(self.latency)
+            return super().__call__(url)
+        finally:
+            with self.lock:
+                self.inflight -= 1
+
+
+def _par(net, **kw):
+    kw.setdefault("delay", 0)
+    kw.setdefault("max_batch", 2)
+    return GoogleTranslator(opener=net, **kw)
+
+
+def test_parallel_keeps_order_and_runs_concurrently():
+    net = SlowNet()
+    g = _par(net, workers=4)
+    texts = ["t%d" % i for i in range(16)]
+    assert g.translate_batch(texts, "en", "ko") == ["KO(%s)" % t for t in texts]
+    assert 2 <= net.peak <= 4
+    assert len(net.calls) == 8
+
+
+def test_parallel_faster_than_serial():
+    texts = ["t%d" % i for i in range(16)]
+    t0 = time.monotonic()
+    _par(SlowNet(latency=0.1), workers=1).translate_batch(texts, "en", "ko")
+    serial = time.monotonic() - t0
+    t0 = time.monotonic()
+    _par(SlowNet(latency=0.1), workers=4).translate_batch(texts, "en", "ko")
+    par = time.monotonic() - t0
+    assert par < serial * 0.6
+
+
+def test_global_interval_is_respected_across_workers():
+    t = [0.0]
+    starts = []
+    lock = threading.Lock()
+
+    def net(url):
+        with lock:
+            starts.append(t[0])
+        return 200, gtx_body("x")
+
+    def sleeper(s, stop):
+        with lock:
+            t[0] += s
+
+    g = GoogleTranslator(opener=net, sleeper=sleeper, clock=lambda: t[0], delay=1.0, workers=1)
+    for _ in range(4):
+        g._request("a", "en", "ko", lambda: False)
+    assert starts == [0.0, 1.0, 2.0, 3.0]
+
+
+def test_rate_limit_shrinks_workers_and_recovers():
+    net = FakeNet(responses=[(429, "")])
+    sleeps, t = [], [0.0]
+
+    def sleeper(s, stop):
+        sleeps.append(s)
+        t[0] += s
+
+    g = GoogleTranslator(opener=net, sleeper=sleeper, clock=lambda: t[0], delay=0, workers=3,
+                         max_batch=1, backoff_base=5)
+    assert g.parallel == 3
+    g.translate_batch(["a"], "en", "ko")      # 429 한 번 → 5초 쉬고 성공
+    assert sleeps == [5] and g.parallel == 2
+    from rpytl.translators.google import GROW_AFTER
+    for _ in range(GROW_AFTER):
+        g._request("a", "en", "ko", lambda: False)
+    assert g.parallel == 3
+
+
+def test_parallel_failure_aborts_others_and_raises_real_error():
+    class Net(SlowNet):
+        def __call__(self, url):
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["q"][0]
+            if "BAD" in q:
+                return 400, "nope"
+            return super().__call__(url)
+
+    g = _par(Net(latency=0.05), workers=4)
+    texts = ["t%d" % i for i in range(12)] + ["BAD"]
+    with pytest.raises(TranslatorError):
+        g.translate_batch(texts, "en", "ko")
+
+
+def test_parallel_stop():
+    from rpytl.translators.base import Stopped
+    g = _par(SlowNet(), workers=4)
+    with pytest.raises(Stopped):
+        g.translate_batch(["t%d" % i for i in range(12)], "en", "ko", should_stop=lambda: True)
+
+
+def test_runner_fetches_workers_times_batch(game, monkeypatch):
+    dbp, gid = game
+    seen = []
+    from rpytl import translators
+
+    class T(GoogleTranslator):
+        def translate_batch(self, texts, *a, **k):
+            seen.append(len(texts))
+            return super().translate_batch(texts, *a, **k)
+
+    net = FakeNet()
+    monkeypatch.setattr(runner, "create", lambda name, opts, bridge=None: T(
+        opener=net, sleeper=lambda s, st: None, delay=0, max_batch=2, workers=3))
+    runner.run(dbp, gid, "google", "{}", Ctl())
+    assert seen[0] == 6   # max_batch(2) * workers(3)

@@ -21,6 +21,8 @@ class Translator:
     name = "base"
     # 한 번에 넘길 최대 항목 수 (runner 가 참고)
     max_batch = 20
+    # 동시에 처리할 수 있는 요청 수 (runner 가 한 번에 가져올 줄 수 = max_batch * parallel)
+    parallel = 1
 
     def translate_batch(self, texts, source_lang, target_lang, should_stop=lambda: False):
         """texts(플레이스홀더 처리된 문자열 목록) → 같은 길이의 번역 목록."""

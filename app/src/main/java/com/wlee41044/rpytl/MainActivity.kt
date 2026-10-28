@@ -387,7 +387,8 @@ private fun SettingsPanel(prefs: Prefs) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         TextPref("원문 언어 (Google 코드, auto=자동)", prefs.sourceLang) { prefs.sourceLang = it.ifBlank { "auto" } }
         TextPref("번역 언어 코드 (비우면 tl 언어에서 자동, korean→ko)", prefs.targetCode) { prefs.targetCode = it }
-        IntPref("Google 요청 간격 ms", prefs.googleDelayMs) { prefs.googleDelayMs = it.coerceIn(200, 60000) }
+        IntPref("Google 동시 요청 수 (1~8, 제한 걸리면 자동 감소)", prefs.googleWorkers) { prefs.googleWorkers = it.coerceIn(1, 8) }
+        IntPref("Google 요청 시작 간격 ms (전체 공통, 낮을수록 빠름)", prefs.googleDelayMs) { prefs.googleDelayMs = it.coerceIn(100, 60000) }
         IntPref("Google 한 요청당 줄 수", prefs.googleBatch) { prefs.googleBatch = it.coerceIn(1, 100) }
         BoolPref("Google 실패 시 로컬 모델로 전환", prefs.fallbackLocal) { prefs.fallbackLocal = it }
         IntPref("로컬: 배치 크기 (발열 시 줄이기)", prefs.localBatch) { prefs.localBatch = it.coerceIn(1, 32) }

@@ -86,7 +86,7 @@ def run(db_path, game_id, engine="google", opts_json="{}", control=None, local_b
                 break
             st = db.stats(con, game_id)
             ctl.progress(st[db.DONE], st["total"])
-            n = batch_size or tr.max_batch
+            n = batch_size or tr.max_batch * max(1, int(tr.parallel))
             batch = db.pending_texts(con, game_id, n)
             if not batch:
                 break

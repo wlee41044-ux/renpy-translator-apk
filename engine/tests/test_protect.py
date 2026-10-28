@@ -88,12 +88,15 @@ def test_runner_sends_broken_structure_to_review(tmp_path, monkeypatch):
     pipeline.scan_game(dbp, gid, str(g))
 
     class FakeGoogle:
-        name, max_batch, parallel = "google", 10, 1
+        name, max_batch, parallel, batch_lines = "google", 10, 1, 10
         log = lambda self, m: None  # noqa: E731
 
         def translate_batch(self, texts, *a, **k):
             # 플레이스홀더는 모두 지켰지만 번역기가 자기 멋대로 [..] 를 끼워 넣은 번역
             return ["ZQ0Z전투 승리] ZQ1Z를 물리쳤다! [추가]" for _ in texts]
+
+        def take_report(self):
+            return ""
 
         def close(self):
             pass

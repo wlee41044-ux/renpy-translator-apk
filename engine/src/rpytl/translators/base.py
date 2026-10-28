@@ -24,6 +24,15 @@ class Translator:
     # 동시에 처리할 수 있는 요청 수 (runner 가 한 번에 가져올 줄 수 = max_batch * parallel)
     parallel = 1
 
+    @property
+    def batch_lines(self):
+        """runner 가 한 번에 가져올 줄 수"""
+        return self.max_batch * max(1, int(self.parallel))
+
+    def take_report(self):
+        """직전 배치의 속도 통계 문자열 (로그용). 없으면 빈 문자열."""
+        return ""
+
     def translate_batch(self, texts, source_lang, target_lang, should_stop=lambda: False):
         """texts(플레이스홀더 처리된 문자열 목록) → 같은 길이의 번역 목록."""
         raise NotImplementedError

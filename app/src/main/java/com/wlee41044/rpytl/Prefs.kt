@@ -23,16 +23,16 @@ class Prefs(context: Context) {
 
     /** 요청 시작 사이 최소 간격 (모든 동시 요청 공통). 예전 키(google_delay_ms)와 의미가 달라 키를 바꿈 */
     var googleDelayMs: Int
-        get() = sp.getInt("google_interval_ms", 500)
+        get() = sp.getInt("google_interval_ms", 300)
         set(v) = sp.edit().putInt("google_interval_ms", v).apply()
 
     /** 동시에 보낼 요청 수 (제한이 걸리면 자동으로 줄었다가 안정되면 복구) */
     var googleWorkers: Int
-        get() = sp.getInt("google_workers", 3)
+        get() = sp.getInt("google_workers", 4)
         set(v) = sp.edit().putInt("google_workers", v).apply()
 
     var googleBatch: Int
-        get() = sp.getInt("google_batch", 25)
+        get() = sp.getInt("google_batch", 40)
         set(v) = sp.edit().putInt("google_batch", v).apply()
 
     /** Google 실패 시 로컬 모델로 자동 전환 */

@@ -88,7 +88,7 @@ def test_client_error_not_retried():
 
 def test_chunking_by_size():
     net = FakeNet()
-    g, _ = make(net, max_chars=10)
+    g, _ = make(net, max_encoded=14)       # GET 모드: URL 인코딩 길이 기준
     g.translate_batch(["aaaa", "bbbb", "cccc"], "en", "ko")
     assert net.calls == ["aaaa\nbbbb", "cccc"]
 
@@ -170,7 +170,7 @@ def test_runner_pause_and_resume(game, monkeypatch):
     dbp, gid = game
     net = FakeNet()
     _patch_google(monkeypatch, net)
-    r = json.loads(runner.run(dbp, gid, "google", "{}", Ctl(stop_after=2)))
+    r = json.loads(runner.run(dbp, gid, "google", "{}", Ctl(stop_after=5)))
     assert r["status"] == "stopped"
     con = db.connect(dbp)
     first = db.stats(con, gid)
@@ -186,7 +186,7 @@ def test_runner_pause_and_resume(game, monkeypatch):
 
 def test_runner_error_keeps_progress(game, monkeypatch):
     dbp, gid = game
-    net = FakeNet(responses=[None, (400, "blocked")])
+    net = FakeNet(responses=[None, None, None, (400, "blocked")])   # 첫 배치(3요청)는 성공, 둘째 배치에서 실패
     _patch_google(monkeypatch, net)
     r = json.loads(runner.run(dbp, gid, "google", "{}", Ctl()))
     assert r["status"] == "error"
@@ -401,7 +401,7 @@ def test_runner_fetches_workers_times_batch(game, monkeypatch):
     monkeypatch.setattr(runner, "create", lambda name, opts, bridge=None: T(
         opener=net, sleeper=lambda s, st: None, delay=0, max_batch=2, workers=3))
     runner.run(dbp, gid, "google", "{}", Ctl())
-    assert seen[0] == 6   # max_batch(2) * workers(3)
+    assert seen[0] == 18   # batch_lines = max_batch(2) * workers(3) * 3 라운드
 
 
 # ---------------------------------------------------------------- 413 (요청 주소가 너무 김)
@@ -448,3 +448,76 @@ def test_very_long_single_line_is_split_by_sentence():
     long_line = " ".join("Sentence number %d is here." % i for i in range(30))
     out = g.translate_batch([long_line], "en", "ko")
     assert len(out) == 1 and out[0].count("KO(") > 1
+
+
+def test_partial_results_are_saved_when_a_later_request_fails(game, monkeypatch):
+    dbp, gid = game
+    net = FakeNet(responses=[None, (400, "blocked")])        # 첫 요청 성공, 둘째 요청 실패
+    from rpytl import translators
+
+    monkeypatch.setattr(runner, "create", lambda name, opts, bridge=None: GoogleTranslator(
+        opener=net, sleeper=lambda s, st: None, delay=0, max_batch=4, workers=1))
+    r = json.loads(runner.run(dbp, gid, "google", "{}", Ctl()))
+    assert r["status"] == "error"
+    con = db.connect(dbp)
+    assert db.stats(con, gid)["done"] == 4      # 성공한 첫 청크(4줄)는 저장, 나머지는 대기로 남음
+    assert db.stats(con, gid)["pending"] > 0
+
+
+def test_post_is_used_for_big_requests_and_falls_back_to_get():
+    calls = {"get": [], "post": []}
+
+    def get(url):
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["q"][0]
+        calls["get"].append(len(q))
+        return 200, gtx_body("\n".join("KO(" + x + ")" for x in q.split("\n")))
+
+    def post_ok(url, data):
+        q = urllib.parse.parse_qs(data.decode())["q"][0]
+        calls["post"].append(len(q))
+        return 200, gtx_body("\n".join("KO(" + x + ")" for x in q.split("\n")))
+
+    texts = ["가나다라마바사아자차 문장 %d" % i for i in range(30)]
+    g = GoogleTranslator(opener=get, post_opener=post_ok, sleeper=lambda s, st: None, delay=0,
+                         workers=1, max_batch=40, max_chars=3000)
+    assert g.translate_batch(texts, "ja", "ko") == ["KO(%s)" % t for t in texts]
+    assert len(calls["post"]) == 1 and calls["get"] == []       # 한 번에 30줄
+    assert "POST" in g.take_report()
+
+    # POST 가 막힌 환경: 한 번 시도 후 GET 으로 전환, 결과는 똑같이 나와야 한다
+    calls = {"get": [], "post": []}
+
+    def post_blocked(url, data):
+        calls["post"].append(1)
+        return 405, "<title>Method Not Allowed</title>"
+
+    g = GoogleTranslator(opener=get, post_opener=post_blocked, sleeper=lambda s, st: None, delay=0,
+                         workers=1, max_batch=40, max_chars=3000, max_encoded=1500)
+    assert g.translate_batch(texts, "ja", "ko") == ["KO(%s)" % t for t in texts]
+    assert len(calls["post"]) == 1 and len(calls["get"]) >= 2
+    assert g._post_ok is False
+
+
+def test_413_on_post_lowers_the_limit():
+    seen = []
+
+    def post(url, data):
+        q = urllib.parse.parse_qs(data.decode())["q"][0]
+        seen.append(len(q))
+        if len(q) > 300:
+            return 413, "<title>413</title>"
+        return 200, gtx_body("\n".join("KO(" + x + ")" for x in q.split("\n")))
+
+    texts = ["가나다라마바사아자차 %d" % i for i in range(60)]
+    def small_get(url):       # 작은 요청은 GET 으로 간다
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["q"][0]
+        return 200, gtx_body("\n".join("KO(" + x + ")" for x in q.split("\n")))
+
+    g = GoogleTranslator(opener=small_get, post_opener=post, sleeper=lambda s, st: None,
+                         delay=0, workers=1, max_batch=100, max_chars=3000)
+    out = g.translate_batch(texts, "ja", "ko")
+    assert out == ["KO(%s)" % t for t in texts]
+    assert g.max_chars < 3000                       # 한도가 낮아져 다음 배치는 처음부터 작게 나눈다
+    seen.clear()
+    g.translate_batch(texts, "ja", "ko")
+    assert max(seen) <= 400 and len(seen) >= 2

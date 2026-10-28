@@ -79,39 +79,82 @@ def run(db_path, game_id, engine="google", opts_json="{}", control=None, local_b
         db.reset_status(con, game_id, db.REVIEW)
 
     ctl.log("번역 시작: 엔진=%s, %s → %s" % (tr.name, source_lang, target_lang))
+
+    def save_results(todo, masks, outs):
+        """outs[i] 가 None 이면(못 한 줄) 대기 상태로 남긴다. 반환: 완료로 저장된 줄 수"""
+        ok = 0
+        with db.tx(con):
+            for row, p, out in zip(todo, masks, outs):
+                if out is None:
+                    continue
+                try:
+                    text = restore(out, p.tokens)
+                    if not text.strip():
+                        raise RestoreError("empty translation")
+                    problem = structure_problem(row["source"], text)
+                    if problem:
+                        raise RestoreError(problem)
+                    db.set_translation(con, game_id, row["src_hash"], text, tr.name)
+                    result["translated"] += 1
+                    ok += 1
+                except RestoreError as e:
+                    db.set_translation(con, game_id, row["src_hash"], out, tr.name,
+                                       status=db.REVIEW, note=str(e))
+                    result["review"] += 1
+        return ok
+
     try:
-        while True:
+        st = db.stats(con, game_id)
+        done, total = st[db.DONE], st["total"]
+        ctl.progress(done, total)
+        rows = db.pending_all(con, game_id)      # 배치마다 DB 를 다시 훑지 않는다
+        pos = 0
+        while pos < len(rows):
             if ctl.stopped():
                 result["status"] = "stopped"
                 break
-            st = db.stats(con, game_id)
-            ctl.progress(st[db.DONE], st["total"])
-            n = batch_size or tr.max_batch * max(1, int(tr.parallel))
-            batch = db.pending_texts(con, game_id, n)
-            if not batch:
-                break
+            n = batch_size or tr.batch_lines
+            batch = rows[pos:pos + n]
 
+            t_db = time.monotonic()
             todo, masks = [], []
+            copied = 0
             with db.tx(con):
                 for row in batch:
                     p = protect(row["source"])
                     if not p.translatable:
                         db.set_translation(con, game_id, row["src_hash"], row["source"], "copy")
-                        result["copied"] += 1
+                        copied += 1
                     else:
                         todo.append(row)
                         masks.append(p)
+            db_time = time.monotonic() - t_db
+            result["copied"] += copied
+            done += copied
             if not todo:
+                pos += len(batch)
+                ctl.progress(done, total)
                 continue
 
             t0 = time.monotonic()
             try:
                 outs = tr.translate_batch([p.masked for p in masks], source_lang, target_lang,
                                           should_stop=ctl.stopped)
-            except Stopped:
+            except Stopped as e:
+                part = getattr(e, "partial", None)
+                if part:
+                    done += save_results(todo, masks, part)
+                    ctl.progress(done, total)
                 result["status"] = "stopped"
                 break
             except (RateLimited, TranslatorError) as e:
+                part = getattr(e, "partial", None)
+                if part:
+                    saved = save_results(todo, masks, part)      # 이미 성공한 청크는 버리지 않는다
+                    done += saved
+                    ctl.progress(done, total)
+                    if saved:
+                        ctl.log("실패 전에 끝난 %d줄은 저장" % saved)
                 ctl.log("엔진 실패: %s" % e)
                 if len(engines) > 1 and tr.name == engines[0]:
                     try:
@@ -124,28 +167,22 @@ def run(db_path, game_id, engine="google", opts_json="{}", control=None, local_b
                 result["status"] = "error"
                 result["message"] = str(e)
                 break
+            net_time = time.monotonic() - t0
             if len(outs) != len(todo):
                 result["status"] = "error"
                 result["message"] = "engine returned %d results for %d" % (len(outs), len(todo))
                 break
 
-            with db.tx(con):
-                for row, p, out in zip(todo, masks, outs):
-                    try:
-                        text = restore(out, p.tokens)
-                        if not text.strip():
-                            raise RestoreError("empty translation")
-                        problem = structure_problem(row["source"], text)
-                        if problem:
-                            raise RestoreError(problem)
-                        db.set_translation(con, game_id, row["src_hash"], text, tr.name)
-                        result["translated"] += 1
-                    except RestoreError as e:
-                        db.set_translation(con, game_id, row["src_hash"], out, tr.name,
-                                           status=db.REVIEW, note=str(e))
-                        result["review"] += 1
-            ctl.log("%d줄 번역 (%.1fs), 검수필요 누적 %d"
-                    % (len(todo), time.monotonic() - t0, result["review"]))
+            t_db = time.monotonic()
+            ok = save_results(todo, masks, outs)
+            db_time += time.monotonic() - t_db
+            pos += len(batch)
+            done += ok
+            ctl.progress(done, total)
+            rep = tr.take_report()
+            ctl.log("%d줄 %.1fs (%.0f줄/초)%s · DB %.1fs · 검수필요 누적 %d"
+                    % (len(todo), net_time + db_time, len(todo) / max(0.001, net_time + db_time),
+                       (" · " + rep) if rep else "", db_time, result["review"]))
     finally:
         st = db.stats(con, game_id)
         ctl.progress(st[db.DONE], st["total"])

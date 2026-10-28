@@ -167,6 +167,16 @@ def pending_texts(con, game_id, limit, statuses=(PENDING,)):
     return [dict(r) for r in con.execute(q, (game_id, *statuses, limit))]
 
 
+def pending_all(con, game_id, statuses=(PENDING,)):
+    """번역 대기 원문 전부를 파일/줄 순서로 한 번에 읽는다 (배치마다 다시 조회하지 않기 위함)."""
+    q = """
+        SELECT t.src_hash, t.source, MIN(e.file || ':' || printf('%%08d', e.line)) AS pos
+        FROM texts t JOIN entries e ON e.game_id = t.game_id AND e.src_hash = t.src_hash
+        WHERE t.game_id = ? AND e.active = 1 AND t.status IN (%s)
+        GROUP BY t.src_hash ORDER BY pos""" % ",".join("?" * len(statuses))
+    return [dict(r) for r in con.execute(q, (game_id, *statuses))]
+
+
 def set_translation(con, game_id, src_hash, translation, engine, status=DONE, note=None):
     con.execute("""UPDATE texts SET translation = ?, engine = ?, status = ?, note = ?, updated_at = ?
                    WHERE game_id = ? AND src_hash = ?""",

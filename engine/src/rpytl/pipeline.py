@@ -87,3 +87,35 @@ def export(db_path, game_id, out_dir, font=None, force_language=True, existing_t
         return _j({"files": written, "info": info})
     finally:
         con.close()
+
+
+def set_language(db_path, game_id, language):
+    import re
+    if not re.match(r"^\w+$", language or ""):
+        raise ValueError("언어 이름은 영문/숫자/_ 만 가능: %r" % language)
+    con = open_db(db_path)
+    try:
+        db.set_language(con, game_id, language)
+    finally:
+        con.close()
+
+
+def delete_game(db_path, game_id):
+    con = open_db(db_path)
+    try:
+        db.delete_game(con, game_id)
+    finally:
+        con.close()
+
+
+def review_list(db_path, game_id, limit=200):
+    con = open_db(db_path)
+    try:
+        return _j(db.review_list(con, game_id, limit))
+    finally:
+        con.close()
+
+
+def translate(db_path, game_id, engine, opts_json, control, local_bridge=None):
+    from . import runner
+    return runner.run(db_path, game_id, engine, opts_json, control, local_bridge)

@@ -13,8 +13,8 @@ android {
         applicationId = "com.wlee41044.rpytl"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 3
+        versionName = "0.3.0"
 
         ndk {
             // 갤럭시 S24 = arm64-v8a. x86_64 는 에뮬레이터용.
@@ -81,4 +81,5 @@ dependencies {
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("androidx.documentfile:documentfile:1.1.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 }

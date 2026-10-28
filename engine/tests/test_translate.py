@@ -1,0 +1,211 @@
+import json
+import os
+import shutil
+import urllib.parse
+
+import pytest
+
+from rpytl import db, pipeline, runner
+from rpytl.translators import RateLimited, TranslatorError
+from rpytl.translators.google import GoogleTranslator
+
+DATA = os.path.join(os.path.dirname(__file__), "data")
+
+
+def gtx_body(text):
+    # 실제 응답 형식: [[["번역","원문",null,null,10],...],null,"en",...]
+    return json.dumps([[[t + ("\n" if i < len(text.split("\n")) - 1 else ""), "x", None, None, 10]
+                        for i, t in enumerate(text.split("\n"))], None, "en"])
+
+
+class FakeNet:
+    """q 파라미터를 받아 '번역'해 주는 가짜 Google. responses 로 실패를 섞을 수 있다."""
+
+    def __init__(self, fn=lambda s: "KO(" + s + ")", responses=None):
+        self.fn = fn
+        self.responses = list(responses or [])
+        self.calls = []
+
+    def __call__(self, url):
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["q"][0]
+        self.calls.append(q)
+        if self.responses:
+            r = self.responses.pop(0)
+            if r is not None:
+                return r
+        return 200, gtx_body("\n".join(self.fn(line) for line in q.split("\n")))
+
+
+def make(net, **kw):
+    sleeps = []
+    g = GoogleTranslator(opener=net, sleeper=lambda s, stop: sleeps.append(s), delay=0, **kw)
+    return g, sleeps
+
+
+def test_batch_joined_in_one_request():
+    net = FakeNet()
+    g, _ = make(net)
+    assert g.translate_batch(["a", "b", "c"], "en", "ko") == ["KO(a)", "KO(b)", "KO(c)"]
+    assert len(net.calls) == 1
+
+
+def test_line_count_mismatch_falls_back_to_single():
+    net = FakeNet(fn=lambda s: s, responses=[(200, gtx_body("merged line"))])
+    g, _ = make(net)
+    assert g.translate_batch(["a", "b"], "en", "ko") == ["a", "b"]
+    assert net.calls == ["a\nb", "a", "b"]
+
+
+def test_429_backoff_then_success():
+    net = FakeNet(responses=[(429, "Too Many"), (200, "<html>Sorry...</html>"), None])
+    g, sleeps = make(net, backoff_base=10)
+    assert g.translate_batch(["hi"], "en", "ko") == ["KO(hi)"]
+    assert sleeps[:2] == [10, 20]
+
+
+def test_rate_limit_exhausted():
+    net = FakeNet(responses=[(429, "")] * 10)
+    g, _ = make(net, max_retries=2)
+    with pytest.raises(RateLimited):
+        g.translate_batch(["hi"], "en", "ko")
+
+
+def test_client_error_not_retried():
+    net = FakeNet(responses=[(400, "bad")])
+    g, _ = make(net)
+    with pytest.raises(TranslatorError):
+        g.translate_batch(["hi"], "en", "ko")
+    assert len(net.calls) == 1
+
+
+def test_chunking_by_size():
+    net = FakeNet()
+    g, _ = make(net, max_chars=10)
+    g.translate_batch(["aaaa", "bbbb", "cccc"], "en", "ko")
+    assert net.calls == ["aaaa\nbbbb", "cccc"]
+
+
+class Ctl:
+    def __init__(self, stop_after=None):
+        self.logs, self.prog, self.stop_after, self.n = [], [], stop_after, 0
+
+    def isStopped(self):
+        self.n += 1
+        return self.stop_after is not None and self.n > self.stop_after
+
+    def log(self, m):
+        self.logs.append(m)
+
+    def progress(self, d, t):
+        self.prog.append((d, t))
+
+
+@pytest.fixture
+def game(tmp_path, monkeypatch):
+    g = tmp_path / "game"
+    shutil.copytree(os.path.join(DATA, "game_v1"), g)
+    dbp = str(tmp_path / "t.db")
+    gid = pipeline.add_game(dbp, "T", "u")
+    pipeline.scan_game(dbp, gid, str(g))
+    return dbp, gid
+
+
+def _patch_google(monkeypatch, net):
+    from rpytl import translators
+    orig = translators.create
+
+    def create(name, opts, bridge=None):
+        if name == "google":
+            g = GoogleTranslator(opener=net, sleeper=lambda s, stop: None, delay=0, max_batch=4)
+            return g
+        return orig(name, opts, bridge)
+    monkeypatch.setattr(runner, "create", create)
+
+
+def test_runner_translates_everything_and_restores_tags(game, monkeypatch):
+    dbp, gid = game
+    # 번역기가 플레이스홀더를 소문자/공백 섞어서 돌려줘도 복원돼야 함
+    net = FakeNet(fn=lambda s: "번역:" + s.replace("ZQ0Z", "zq 0 z"))
+    _patch_google(monkeypatch, net)
+    ctl = Ctl()
+    r = json.loads(runner.run(dbp, gid, "google", "{}", ctl))
+    assert r["status"] == "finished"
+    con = db.connect(dbp)
+    s = db.stats(con, gid)
+    assert s["done"] == s["total"] == 17
+    tr = {row["source"]: row["translation"] for row in con.execute("SELECT * FROM texts")}
+    assert tr["Good morning, [player_name]!"] == "번역:Good morning, [player_name]!"
+    assert tr["Hey, it's %(time)s already.\nWe're late!"] == \
+        "번역:Hey, it's %(time)s already.\nWe're late!"
+    assert ctl.prog[-1] == (17, 17)
+    # 모든 요청은 ko 로
+    assert all("ZQ" in c or "[" not in c for c in net.calls)
+
+
+def test_runner_marks_review_on_broken_placeholder(game, monkeypatch):
+    dbp, gid = game
+    net = FakeNet(fn=lambda s: "깨짐" if "ZQ" in s else "ok:" + s)
+    _patch_google(monkeypatch, net)
+    r = json.loads(runner.run(dbp, gid, "google", "{}", Ctl()))
+    con = db.connect(dbp)
+    s = db.stats(con, gid)
+    assert r["review"] == s["review"] == 4  # [player_name], {b}, %(time)s\n, Version [..]
+    rv = db.review_list(con, gid)
+    assert all("placeholders mismatch" in x["note"] for x in rv)
+    # 검수필요 재시도 옵션
+    net.fn = lambda s: "ok:" + s
+    json.loads(runner.run(dbp, gid, "google", json.dumps({"retry_review": True}), Ctl()))
+    assert db.stats(con, gid)["review"] == 0
+
+
+def test_runner_pause_and_resume(game, monkeypatch):
+    dbp, gid = game
+    net = FakeNet()
+    _patch_google(monkeypatch, net)
+    r = json.loads(runner.run(dbp, gid, "google", "{}", Ctl(stop_after=2)))
+    assert r["status"] == "stopped"
+    con = db.connect(dbp)
+    first = db.stats(con, gid)
+    assert 0 < first["done"] < first["total"]
+    calls_before = len(net.calls)
+    r = json.loads(runner.run(dbp, gid, "google", "{}", Ctl()))
+    assert r["status"] == "finished"
+    assert db.stats(con, gid)["done"] == first["total"]
+    # 이미 번역된 줄은 다시 요청하지 않음
+    sent = [line for c in net.calls[calls_before:] for line in c.split("\n")]
+    assert len(sent) == first["total"] - first["done"] - r["copied"]
+
+
+def test_runner_error_keeps_progress(game, monkeypatch):
+    dbp, gid = game
+    net = FakeNet(responses=[None, (400, "blocked")])
+    _patch_google(monkeypatch, net)
+    r = json.loads(runner.run(dbp, gid, "google", "{}", Ctl()))
+    assert r["status"] == "error"
+    con = db.connect(dbp)
+    assert db.stats(con, gid)["done"] >= 4
+
+
+def test_untranslatable_copied(tmp_path):
+    g = tmp_path / "g"
+    g.mkdir()
+    (g / "a.rpy").write_text('label a:\n    "[name]"\n    "{w}..."\n', encoding="utf-8")
+    dbp = str(tmp_path / "t.db")
+    gid = pipeline.add_game(dbp, "T", "u")
+    pipeline.scan_game(dbp, gid, str(g))
+    r = json.loads(runner.run(dbp, gid, "google", "{}", Ctl()))  # 네트워크 안 씀
+    assert r["copied"] == 2 and r["status"] == "finished"
+    res = json.loads(pipeline.export(dbp, gid, str(tmp_path / "o")))
+    assert res["files"] == ["tl/korean/rpytl/_language.rpy"]
+
+
+def test_local_stub_errors_cleanly(game):
+    dbp, gid = game
+    r = json.loads(runner.run(dbp, gid, "local", "{}", Ctl()))
+    assert r["status"] == "error" and "4단계" in r["message"]
+
+
+def test_lang_code():
+    assert runner.lang_code("korean") == "ko"
+    assert runner.lang_code("schinese") == "zh-CN"
+    assert runner.lang_code("xx") == "xx"

@@ -1,0 +1,88 @@
+package com.wlee41044.rpytl
+
+import android.content.Context
+import com.chaquo.python.PyObject
+import com.chaquo.python.Python
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+
+/** Python 엔진(rpytl.pipeline) 호출 래퍼. 모든 함수는 백그라운드 스레드에서 부를 것. */
+class Engine(context: Context) {
+    private val app = context.applicationContext
+    val dbPath: String = File(app.filesDir, "rpytl.db").absolutePath
+
+    private val py: PyObject by lazy { Python.getInstance().getModule("rpytl.pipeline") }
+
+    fun workDir(gameId: Long) = File(app.filesDir, "work/$gameId/game")
+    fun outDir(gameId: Long) = File(app.filesDir, "out/$gameId")
+
+    fun addGame(name: String, folderUri: String, language: String): Long =
+        py.callAttr("add_game", dbPath, name, folderUri, language).toLong()
+
+    fun listGames(): List<GameInfo> {
+        val arr = JSONArray(py.callAttr("list_games", dbPath).toString())
+        return (0 until arr.length()).map { GameInfo.from(arr.getJSONObject(it)) }
+    }
+
+    fun stats(gameId: Long): Stats = Stats.from(JSONObject(py.callAttr("stats", dbPath, gameId).toString()))
+
+    fun setLanguage(gameId: Long, language: String) {
+        py.callAttr("set_language", dbPath, gameId, language)
+    }
+
+    fun deleteGame(gameId: Long) {
+        py.callAttr("delete_game", dbPath, gameId)
+        File(app.filesDir, "work/$gameId").deleteRecursively()
+        outDir(gameId).deleteRecursively()
+    }
+
+    fun resetWorkdir(gameId: Long) {
+        py.callAttr("reset_workdir", workDir(gameId).absolutePath)
+    }
+
+    fun extractArchiveFd(fd: Int, gameId: Long): JSONArray =
+        JSONArray(py.callAttr("extract_archive_fd", fd, workDir(gameId).absolutePath).toString())
+
+    fun scan(gameId: Long, renpyVersionText: String?): JSONObject =
+        JSONObject(py.callAttr("scan_game", dbPath, gameId, workDir(gameId).absolutePath, renpyVersionText).toString())
+
+    fun export(gameId: Long, font: String?, forceLanguage: Boolean, existingTlDir: String?): JSONObject =
+        JSONObject(
+            py.callAttr("export", dbPath, gameId, outDir(gameId).absolutePath, font, forceLanguage, existingTlDir)
+                .toString()
+        )
+
+    fun translate(gameId: Long, engine: String, opts: JSONObject, control: PyControl, localBridge: Any?): JSONObject =
+        JSONObject(py.callAttr("translate", dbPath, gameId, engine, opts.toString(), control, localBridge).toString())
+
+    fun reviewList(gameId: Long): JSONArray = JSONArray(py.callAttr("review_list", dbPath, gameId, 200).toString())
+}
+
+/** Python 쪽 runner 가 호출하는 콜백 (메서드 이름은 runner._Ctl 과 맞출 것). */
+interface PyControl {
+    fun isStopped(): Boolean
+    fun log(msg: String)
+    fun progress(done: Int, total: Int)
+}
+
+data class Stats(
+    val total: Int, val done: Int, val pending: Int, val review: Int, val unused: Int, val progress: Double,
+) {
+    companion object {
+        fun from(o: JSONObject) = Stats(
+            o.optInt("total"), o.optInt("done"), o.optInt("pending"), o.optInt("review"),
+            o.optInt("unused"), o.optDouble("progress", 0.0),
+        )
+        val EMPTY = Stats(0, 0, 0, 0, 0, 0.0)
+    }
+}
+
+data class GameInfo(val id: Long, val name: String, val folderUri: String, val language: String, val stats: Stats) {
+    companion object {
+        fun from(o: JSONObject) = GameInfo(
+            o.getLong("id"), o.getString("name"), o.getString("folder_uri"), o.getString("language"),
+            o.optJSONObject("stats")?.let { Stats.from(it) } ?: Stats.EMPTY,
+        )
+    }
+}

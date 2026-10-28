@@ -51,7 +51,8 @@ class TranslateService : Service() {
         private const val NOTIF_ID = 1
 
         fun start(ctx: Context, action: String, gameId: Long, retryReview: Boolean = false) {
-            if (action != ACTION_PAUSE) JobState.stopRequested.set(false)
+            // 작업 중에 다른 작업을 누르면 대기열에 들어가므로, 실행 중인 작업의 일시정지 요청을 지우지 않는다
+            if (action != ACTION_PAUSE && JobState.running.value == null) JobState.stopRequested.set(false)
             val i = Intent(ctx, TranslateService::class.java)
                 .setAction(action).putExtra(EXTRA_GAME, gameId).putExtra(EXTRA_RETRY_REVIEW, retryReview)
             ContextCompat.startForegroundService(ctx, i)
@@ -194,12 +195,13 @@ class TranslateService : Service() {
             JobState.log("스크립트(.rpa/.rpy/.rpyc)를 찾지 못했습니다.")
             return
         }
-        val r = engine.scan(gameId, versionText, prefs.pyStrings)
+        val r = engine.scan(gameId, versionText, prefs.pyStrings, prefs.skipExisting)
         val c = r.getJSONObject("counts")
         JobState.log(
             "스캔 완료 (Ren'Py ${r.optString("renpy_version", "?")}): 항목 ${r.getInt("items")}개 — " +
                 "신규 ${c.getInt("added")}, 변경 ${c.getInt("changed")}, 삭제(미사용) ${c.getInt("removed")}, " +
-                "유지 ${c.getInt("unchanged")}, 재사용 ${c.getInt("reactivated")}"
+                "유지 ${c.getInt("unchanged")}, 재사용 ${c.getInt("reactivated")}" +
+                (if (c.optInt("existing_translation") > 0) ", 기존 번역이 덮어서 건너뜀 ${c.getInt("existing_translation")}" else "")
         )
         val errors = r.getJSONArray("errors")
         for (i in 0 until minOf(errors.length(), 30)) JobState.log("  읽기 실패: ${errors.getString(i)}")

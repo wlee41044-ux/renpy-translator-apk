@@ -282,7 +282,7 @@ private fun MainScreen(engine: Engine, prefs: Prefs) {
         if (game != null && gid != null) {
             HorizontalDivider()
             val busy = running != null
-            val runText = running?.let { "작업 중: ${it.kind} (게임 ${it.gameId})" } ?: "대기"
+            val runText = running?.let { "작업 중: ${it.kind} (게임 ${it.gameId}) — 지금 누른 작업은 대기열에 추가되어 순서대로 실행됩니다" } ?: "대기"
             Text(runText, fontSize = 12.sp)
             Text(
                 "전체 ${stats.total}  완료 ${stats.done}  남은 ${stats.pending}  검수필요 ${stats.review}  미사용 ${stats.unused}",
@@ -291,20 +291,20 @@ private fun MainScreen(engine: Engine, prefs: Prefs) {
             Text("진행률 ${"%.1f".format(stats.progress * 100)}%", fontSize = 12.sp)
 
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Button(enabled = !busy, onClick = { TranslateService.start(ctx, TranslateService.ACTION_SCAN, gid) }) {
+                Button(onClick = { TranslateService.start(ctx, TranslateService.ACTION_SCAN, gid) }) {
                     Text("스캔")
                 }
-                Button(enabled = !busy, onClick = { TranslateService.start(ctx, TranslateService.ACTION_TRANSLATE, gid) }) {
+                Button(onClick = { TranslateService.start(ctx, TranslateService.ACTION_TRANSLATE, gid) }) {
                     Text(if (stats.done > 0) "번역 이어하기" else "번역 시작")
                 }
                 OutlinedButton(enabled = busy, onClick = { TranslateService.pause(ctx) }) { Text("일시정지") }
-                Button(enabled = !busy, onClick = { TranslateService.start(ctx, TranslateService.ACTION_EXPORT, gid) }) {
+                Button(onClick = { TranslateService.start(ctx, TranslateService.ACTION_EXPORT, gid) }) {
                     Text("출력 파일 생성")
                 }
-                OutlinedButton(enabled = !busy, onClick = {
+                OutlinedButton(onClick = {
                     TranslateService.start(ctx, TranslateService.ACTION_ANALYZE, gid)
                 }) { Text("캐릭터 분석") }
-                Button(enabled = !busy, onClick = {
+                Button(onClick = {
                     TranslateService.start(ctx, TranslateService.ACTION_ANALYZE_TRANSLATE, gid)
                 }) { Text("분석 후 번역(밤새)") }
                 OutlinedButton(enabled = !busy && stats.review > 0, onClick = {
@@ -508,6 +508,7 @@ private fun SettingsPanel(prefs: Prefs) {
         TextPref("로컬: GGUF 모델 파일 경로 (아래 버튼으로 선택 권장)", prefs.modelPath) { prefs.modelPath = it }
         BoolPref("스캔: 코드 속 문자열도 번역 (아이템/스킬 설명, 상태창)", prefs.pyStrings) { prefs.pyStrings = it }
         BoolPref("로컬 모델: 캐릭터 분석/화자/앞 대사를 번역에 사용", prefs.useProfiles) { prefs.useProfiles = it }
+        BoolPref("스캔: 게임에 이미 있는 다른 번역이 덮는 줄은 건너뛰기", prefs.skipExisting) { prefs.skipExisting = it }
         BoolPref("언어 강제 (config.language)", prefs.forceLanguage) { prefs.forceLanguage = it }
         BoolPref(
             "폰트: 한글만 한글 폰트로 (끄면 게임 폰트를 통째로 교체)", prefs.fontMode == "fallback",

@@ -77,6 +77,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("force_language", true)
         set(v) = sp.edit().putBoolean("force_language", v).apply()
 
+    /** 게임에 이미 들어 있는 다른 번역(tl/<언어>)이 덮는 줄은 번역하지 않기 */
+    var skipExisting: Boolean
+        get() = sp.getBoolean("skip_existing", true)
+        set(v) = sp.edit().putBoolean("skip_existing", v).apply()
+
     /** 번역할 때 캐릭터 분석 결과(성격/말투), 화자, 앞 대사를 로컬 모델 프롬프트에 넣기 */
     var useProfiles: Boolean
         get() = sp.getBoolean("use_profiles", true)

@@ -66,13 +66,23 @@ def is_renpy_apk(path):
     return apk.is_renpy_apk(path)
 
 
-def scan_game(db_path, game_id, work_game_dir, renpy_version_text=None, py_strings=True):
+def scan_game(db_path, game_id, work_game_dir, renpy_version_text=None, py_strings=True,
+              skip_existing=True):
     """renpy_version_text: 게임의 renpy/vc_version.py 또는 renpy/__init__.py 내용 (없으면 None)."""
     ver = parse_renpy_version(renpy_version_text)
     items, files, errors = scan.collect_items(work_game_dir, tlid_only_considers_say(ver), bool(py_strings))
     con = open_db(db_path)
     try:
         counts = scan.apply_scan(con, game_id, items)
+        existing = 0
+        if skip_existing:
+            # 게임에 이미 들어 있는 다른 번역(tl/<언어>)이 덮는 줄은 번역하지 않는다
+            lang = db.get_game(con, game_id)["language"]
+            ids, strs = tlgen.scan_existing_tl(os.path.join(work_game_dir, "tl", lang), lang)
+            if ids or strs:
+                existing = db.mark_existing_covered(
+                    con, game_id, lambda kind, ident: ident in (ids if kind == "dialogue" else strs))
+        counts["existing_translation"] = existing
         return _j({"counts": counts, "files": len(files), "items": len(items),
                    "renpy_version": ".".join(map(str, ver)) if ver else None,
                    "errors": errors, "stats": db.stats(con, game_id)})

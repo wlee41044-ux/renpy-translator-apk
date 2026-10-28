@@ -29,7 +29,7 @@ def test_scan_counts_and_resume(tmp_path):
     # 다시 스캔해도 변화 없음
     r2 = json.loads(pipeline.scan_game(dbp, gid, game))
     assert r2["counts"] == {"added": 0, "changed": 0, "removed": 0, "unchanged": 18,
-                            "reactivated": 0}
+                            "reactivated": 0, "existing_translation": 0}
 
 
 def test_update_diff_keeps_translations_and_history(tmp_path):
@@ -222,3 +222,36 @@ def test_backup_db_keeps_records_and_rotates(tmp_path):
     con2 = db.connect(os.path.join(os.path.dirname(dbp), "backup", left[-1]))
     assert db.stats(con2, gid)["done"] == 18
     assert pipeline.backup_db(str(tmp_path / "none.db")) == ""
+
+
+def test_existing_translation_is_skipped_before_translating(tmp_path):
+    """게임에 이미 다른 사람의 번역(tl/korean)이 있으면 그 줄은 번역하지 않는다 (밤새 로컬 번역 낭비 방지)."""
+    game = tmp_path / "work" / "game"
+    shutil.copytree(os.path.join(DATA, "game_v1"), game)
+    dbp = str(tmp_path / "t.db")
+    gid = pipeline.add_game(dbp, "T", "u")
+    first = json.loads(pipeline.scan_game(dbp, gid, str(game), skip_existing=False))
+    con = db.connect(dbp)
+    ident = con.execute("SELECT ident FROM entries WHERE kind='dialogue' AND line = 12").fetchone()[0]
+    (game / "tl" / "korean").mkdir(parents=True)
+    (game / "tl" / "korean" / "other.rpy").write_text(
+        'translate korean strings:\n    old "Alice"\n    new "앨리스"\n\n'
+        'translate korean %s:\n    a "남이 번역한 줄"\n' % ident, encoding="utf-8")
+    res = json.loads(pipeline.scan_game(dbp, gid, str(game)))
+    assert res["counts"]["existing_translation"] == 2          # 대사 1줄 + 문자열 1개
+    st = db.stats(con, gid)
+    assert st["done"] == 2 and st["pending"] == first["items"] - 2
+    # 번역 대기 목록에 안 나온다
+    pending = {t["source"] for t in db.pending_texts(con, gid, 100)}
+    assert "Alice" not in pending and "Good morning, [player_name]!" not in pending
+    # 나머지를 번역해서 출력하면 겹치지 않는다
+    _translate_all(con, gid)
+    pipeline.export(dbp, gid, str(tmp_path / "out"), existing_tl_dir=str(game / "tl" / "korean"))
+    text = (tmp_path / "out/tl/korean/rpytl/script.rpy").read_text(encoding="utf-8")
+    assert "Good morning" not in text and "I made" in text
+    # 번역 지우기는 '기존 번역이 덮는 줄' 표시를 건드리지 않는다
+    json.loads(pipeline.reset_translations(dbp, gid, None))
+    assert db.stats(con, gid)["done"] == 2
+    # 옵션을 끄면 예전처럼 전부 번역 대상
+    res2 = json.loads(pipeline.scan_game(dbp, gid, str(game), skip_existing=False))
+    assert res2["counts"]["existing_translation"] == 0

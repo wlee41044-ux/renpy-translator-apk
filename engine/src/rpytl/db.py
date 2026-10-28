@@ -325,6 +325,31 @@ def set_profile(con, game_id, name, profile, auto=0, lines=None):
                 (game_id, name, profile, auto, lines, now()))
 
 
+def mark_existing_covered(con, game_id, covered):
+    """이미 게임에 들어 있는 다른 번역(기존 tl)이 덮고 있는 원문을 번역 대상에서 뺀다.
+
+    covered(kind, ident) -> bool. 같은 원문이 쓰이는 모든 활성 항목이 덮여 있고 아직 번역 안 된 원문만
+    status=done, engine='existing', translation=NULL 로 표시한다 (출력에서는 번역이 없으니 자연히 빠지고,
+    진행률에는 완료로 센다). 반환: 표시한 원문 수.
+    """
+    pending = {r["src_hash"] for r in con.execute(
+        "SELECT src_hash FROM texts WHERE game_id = ? AND status = 'pending'", (game_id,))}
+    if not pending:
+        return 0
+    all_covered = {}
+    for r in con.execute("SELECT kind, ident, src_hash FROM entries WHERE game_id = ? AND active = 1", (game_id,)):
+        h = r["src_hash"]
+        if h in pending:
+            all_covered[h] = all_covered.get(h, True) and bool(covered(r["kind"], r["ident"]))
+    hashes = [h for h, ok in all_covered.items() if ok]
+    if hashes:
+        with tx(con):
+            for h in hashes:
+                con.execute("UPDATE texts SET status = 'done', engine = 'existing', translation = NULL, "
+                            "updated_at = ? WHERE game_id = ? AND src_hash = ?", (now(), game_id, h))
+    return len(hashes)
+
+
 def reset_translations(con, game_id, engine=None):
     """번역을 지우고 대기(pending) 로 되돌린다 (원문/위치/캐릭터 분석은 그대로).
 
@@ -333,7 +358,7 @@ def reset_translations(con, game_id, engine=None):
     반환: 되돌린 줄 수.
     """
     q = """UPDATE texts SET status = 'pending', translation = NULL, engine = NULL, note = NULL, updated_at = ?
-           WHERE game_id = ? AND status IN ('done', 'review') AND COALESCE(engine, '') != 'copy'"""
+           WHERE game_id = ? AND status IN ('done', 'review') AND COALESCE(engine, '') NOT IN ('copy', 'existing')"""
     args = [now(), game_id]
     if engine:
         q += " AND engine = ?"
@@ -346,4 +371,4 @@ def engine_counts(con, game_id):
     """엔진별 번역된 줄 수 (확인 창에 보여 주기 위함). {'google': n, 'local': n, ...}"""
     return {r["engine"] or "?": r["n"] for r in con.execute(
         """SELECT engine, COUNT(*) AS n FROM texts WHERE game_id = ? AND status IN ('done', 'review')
-           AND COALESCE(engine, '') != 'copy' GROUP BY engine""", (game_id,))}
+           AND COALESCE(engine, '') NOT IN ('copy', 'existing') GROUP BY engine""", (game_id,))}

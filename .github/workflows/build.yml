@@ -54,6 +54,14 @@ jobs:
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug --stacktrace
 
+      - name: Check native libs (llama.cpp JNI)
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          unzip -l "$APK" | grep "lib/arm64-v8a/"
+          unzip -p "$APK" lib/arm64-v8a/librpytl_llama.so > "$RUNNER_TEMP/l.so"
+          nm -D --defined-only "$RUNNER_TEMP/l.so" | grep Java_com_wlee41044_rpytl_llm_LlamaLlm_
+          test "$(nm -D --defined-only "$RUNNER_TEMP/l.so" | grep -c Java_com_wlee41044_rpytl_llm_LlamaLlm_)" -eq 5
+
       - name: Rename APK
         run: |
           VER="${GITHUB_REF_NAME//\//-}-${GITHUB_SHA::7}"

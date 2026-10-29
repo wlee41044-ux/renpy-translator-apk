@@ -170,7 +170,9 @@ class GeminiClient:
             msg, st, retry, per_day = parse_error(body or "")
             if status == 429:
                 if per_day:
-                    raise AutoPause("Gemini 하루 한도를 다 썼습니다 (%s). 내일 '번역 이어하기'를 누르세요" % (msg or st))
+                    e = AutoPause("Gemini 하루 한도를 다 썼습니다 (%s)" % (msg or st))
+                    e.per_day = True      # 앱이 한도 초기화 시각에 알림을 예약한다
+                    raise e
                 self._consec += 1
                 if self._consec >= self.pause_after:
                     raise AutoPause("Gemini 요청 제한(429)이 성공 없이 %d회 연속 — 자동 일시정지" % self._consec)

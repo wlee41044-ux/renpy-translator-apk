@@ -157,6 +157,7 @@ class TranslateService : Service() {
         JobState.setRunning(JobState.Running(gameId, action))
         if (action != ACTION_EXPORT) engine.backup()   // 번역 기록 보호 (최근 3개 보관)
         acquireWakeLock()
+        QuotaReset.cancel(this)   // 직접 다시 시작했으면 예약된 한도 초기화 알림은 필요 없다
         try {
             when (action) {
                 ACTION_SCAN -> scan(game.id, game.folderUri, game.language)
@@ -232,7 +233,10 @@ class TranslateService : Service() {
             val opts = JSONObject().put("min_lines", 5).put("max_characters", 40)
             if (useGemini) opts.put("gemini", prefs.geminiOpts())
             val r = engine.analyze(gameId, opts, control, local)
-            if (r.optString("status") == "error") JobState.log("중단 사유: ${r.optString("message")}")
+            when (r.optString("status")) {
+                "error" -> JobState.log("중단 사유: ${r.optString("message")}")
+                "paused" -> onPaused(r)
+            }
             JobState.dbChanged()
             r.optString("status") == "finished"
         } finally {
@@ -263,14 +267,24 @@ class TranslateService : Service() {
             val r = engine.translate(gameId, engineName, opts, control, local)
             when (r.optString("status")) {
                 "error" -> JobState.log("중단 사유: ${r.optString("message")}")
-                "paused" -> {
-                    // 요청 제한(429)이 연속으로 이어져 자동 일시정지. 대기열의 다음 작업도 같은 제한에 걸리므로 같이 멈춘다.
-                    JobState.stopRequested.set(true)
-                    JobState.log("자동 일시정지: ${r.optString("message")}. 대기 중인 다음 작업도 멈춥니다. 시간이 지난 뒤 다시 시작하세요.")
-                }
+                "paused" -> onPaused(r)
             }
         } finally {
             local?.close()
+        }
+    }
+
+    /**
+     * 요청 제한(429) 연속 또는 Gemini 하루 한도 소진으로 자동 일시정지. 대기열의 다음 작업도 같은 제한에 걸리므로 같이 멈춘다.
+     * 하루 한도면 초기화 시각(태평양 시간 자정)에 알림을 예약한다.
+     */
+    private fun onPaused(r: JSONObject) {
+        JobState.stopRequested.set(true)
+        if (r.optBoolean("per_day")) {
+            val at = QuotaReset.schedule(this)
+            JobState.log("${r.optString("message")}. 대기 중인 다음 작업도 멈춥니다. 한도가 초기화되는 $at 쯤 알림을 드립니다.")
+        } else {
+            JobState.log("자동 일시정지: ${r.optString("message")}. 대기 중인 다음 작업도 멈춥니다. 시간이 지난 뒤 다시 시작하세요.")
         }
     }
 

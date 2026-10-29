@@ -37,6 +37,10 @@
                 android:value="Long-running batch translation of user-selected game script files" />
         </service>
 
+        <receiver
+            android:name=".service.QuotaReset$Receiver"
+            android:exported="false" />
+
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"

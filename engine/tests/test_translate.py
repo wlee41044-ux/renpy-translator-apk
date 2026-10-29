@@ -964,3 +964,19 @@ def test_analyze_can_use_gemini_via_opts(game, monkeypatch):
     assert set(seen) == {KEY}
     con = db.connect(dbp)
     assert "침착한 성격" in db.get_profiles(con, gid)["Alice"] and db.STORY_KEY in db.get_profiles(con, gid)
+
+
+def test_gemini_daily_quota_marks_per_day_and_analyze_pauses(game, monkeypatch):
+    dbp, gid = game
+    det = [{"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+            "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}]
+    monkeypatch.setattr(GeminiClient, "_urlopen",
+                        lambda self, url, headers, data: gem_err(429, "RESOURCE_EXHAUSTED", "Quota exceeded", det))
+    monkeypatch.setattr(GeminiClient, "_gate", lambda self, stop: None)
+    c = GeminiClient(api_key=KEY)
+    with pytest.raises(AutoPause) as e:
+        c.chat("s", "hi")
+    assert e.value.per_day is True
+    opts = {"min_lines": 2, "gemini": {"api_key": KEY, "rpm": 100}}
+    r = json.loads(pipeline.analyze(dbp, gid, json.dumps(opts), Ctl(), None))
+    assert r["status"] == "paused" and r["per_day"] is True

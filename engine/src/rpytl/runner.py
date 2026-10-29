@@ -196,6 +196,7 @@ def run(db_path, game_id, engine="google", opts_json="{}", control=None, local_b
                 if getattr(e, "auto_pause", False):
                     result["status"] = "paused"
                     result["message"] = str(e)
+                    result["per_day"] = bool(getattr(e, "per_day", False))
                     ctl.log("자동 일시정지: %s. 끝난 줄은 저장됨. 한참 뒤(또는 와이파이/데이터 전환 후) "
                             "'번역 이어하기'를 누르고, 그래도 걸리면 설정에서 속도를 더 낮추세요." % e)
                     break

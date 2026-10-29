@@ -129,7 +129,11 @@ def run(db_path, game_id, bridge, opts_json="{}", control=None):
                 text = ask(SYSTEM_CHAR, user, 320)
             except Exception as e:
                 ctl.log("분석 실패(%s): %s" % (name, e))
-                result["status"] = "error"
+                if getattr(e, "auto_pause", False):
+                    result["status"] = "paused"
+                    result["per_day"] = bool(getattr(e, "per_day", False))
+                else:
+                    result["status"] = "error"
                 result["message"] = str(e)
                 break
             if ctl.stopped():
@@ -158,6 +162,6 @@ def run(db_path, game_id, bridge, opts_json="{}", control=None):
             ctl.progress(total, total)
     finally:
         con.close()
-    ctl.log("캐릭터 분석 %s: %d명 분석" % ({"finished": "끝", "stopped": "일시정지", "error": "중단(오류)"}[result["status"]],
+    ctl.log("캐릭터 분석 %s: %d명 분석" % ({"finished": "끝", "stopped": "일시정지", "paused": "자동 일시정지(한도)", "error": "중단(오류)"}[result["status"]],
                                       result["analyzed"]))
     return json.dumps(result, ensure_ascii=False)

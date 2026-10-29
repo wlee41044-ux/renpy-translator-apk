@@ -1,8 +1,9 @@
 """Google 번역 (비공식 translate.googleapis.com gtx 엔드포인트).
 
-속도:
+속도 (기본값은 429 가 가장 덜 걸렸던 v0.8.0 시절 값: 간격 0.5초, 동시 3, 요청당 25줄, GET):
 - 병렬: 한 배치를 여러 요청(청크)으로 나눠 workers 개까지 동시에 보낸다.
-- 큰 요청은 URL 대신 본문(POST)으로 보낸다. URL 에 넣으면 한글/일본어가 글자당 9바이트로 늘어나
+- (use_post=True 일 때만) 큰 요청은 URL 대신 본문(POST)으로 보낸다. 기본은 꺼짐: 요청 하나의 데이터량이 커져 429 가
+  훨씬 자주 걸렸다. URL 에 넣으면 한글/일본어가 글자당 9바이트로 늘어나
   한 요청에 몇 줄밖에 못 담는다 (요청 수가 늘어 병렬의 이득이 사라짐). POST 가 거절되면 자동으로 GET 으로 돌아간다.
 - 한도(413)를 만나면 그 크기의 85% 로 한도를 낮춰 기억한다.
 
@@ -29,6 +30,11 @@ UA = ("Mozilla/5.0 (Linux; Android 14; SM-S921N) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36")
 
 
+class AutoPause(RateLimited):
+    """429/차단이 성공 없이 연속으로 이어져 번역을 자동으로 일시정지한다 (끝난 줄은 저장되어 있다)."""
+    auto_pause = True
+
+
 class PayloadTooLarge(TranslatorError):
     """HTTP 413/414: 요청이 너무 크다. 호출자가 청크를 쪼개서 다시 보낸다."""
 
@@ -46,11 +52,14 @@ def _short(body):
 class GoogleTranslator(Translator):
     name = "google"
     OPTIONS = ("delay", "max_retries", "timeout", "max_chars", "max_batch", "backoff_base",
-               "backoff_max", "workers", "max_encoded", "use_post")
+               "backoff_max", "workers", "max_encoded", "use_post", "pause_after")
 
-    def __init__(self, delay=0.5, max_retries=6, timeout=20, max_chars=3000, max_batch=40,
-                 backoff_base=30.0, backoff_max=600.0, workers=3, max_encoded=6000, use_post=True,
-                 opener=None, post_opener=None, clock=time.monotonic, sleeper=None):
+    # 기본값 = 요청 제한(429)이 가장 덜 걸렸던 시절(v0.8.0, 커밋 f86598c)의 값:
+    #   요청 간격 0.5초, 동시 요청 3개, 요청당 25줄, GET 방식 (URL 인코딩 4500바이트 ≈ 일본어 500자)
+    # 더 빠르게(큰 요청/POST, 짧은 간격, 많은 동시 요청) 하면 429 가 훨씬 자주 걸린다.
+    def __init__(self, delay=0.5, max_retries=6, timeout=20, max_chars=1800, max_batch=25,
+                 backoff_base=30.0, backoff_max=600.0, workers=3, max_encoded=4500, use_post=False,
+                 pause_after=3, opener=None, post_opener=None, clock=time.monotonic, sleeper=None):
         self.delay = float(delay)          # 요청 시작 사이 전체 공통 최소 간격(초)
         self.max_retries = int(max_retries)
         self.timeout = float(timeout)
@@ -59,6 +68,7 @@ class GoogleTranslator(Translator):
         self.max_encoded = int(max_encoded)  # GET 한 요청의 URL 인코딩 후 길이 (413 을 만나면 자동으로 낮춤)
         self.backoff_base = float(backoff_base)
         self.backoff_max = float(backoff_max)
+        self.pause_after = max(1, int(pause_after))   # 연속 제한 사건이 이만큼이면 자동 일시정지
         self.max_workers = max(1, int(workers))
         self._workers = self.max_workers   # 현재 허용 동시 요청 수 (차단되면 줄어듦)
         self._open = opener or self._urlopen
@@ -72,7 +82,8 @@ class GoogleTranslator(Translator):
         self._pause_until = 0.0
         self._streak = 0
         self._interval = self.delay        # 현재 요청 시작 간격: 제한을 맞으면 늘리고, 안정되면 기본값까지 줄인다
-        self._level = 0                    # 연속 제한 사건 수준 (대기 시간 = backoff_base * 2^(level-1))
+        self._consec = 0                   # 성공 없이 이어진 제한 사건 수 (성공하면 0)
+        self._level = 0                    # 제한 사건 수준 (대기 시간 = backoff_base * 2^(level-1))
         self._abort = False
         self._rep = {"req": 0, "lat": 0.0, "gate": 0.0, "post": 0}
         self.log = lambda msg: None
@@ -116,6 +127,7 @@ class GoogleTranslator(Translator):
             now = self._clock()
             self._streak = 0
             if now >= self._pause_until:      # 새로운 제한 사건
+                self._consec += 1
                 self._level += 1
                 wait = min(self.backoff_max, self.backoff_base * (2 ** (self._level - 1)))
                 self._pause_until = now + wait
@@ -130,6 +142,7 @@ class GoogleTranslator(Translator):
 
     def _on_success(self):
         with self._lock:
+            self._consec = 0
             self._streak += 1
             if self._streak >= GROW_AFTER:
                 self._streak = 0
@@ -225,6 +238,8 @@ class GoogleTranslator(Translator):
                 raise RateLimited("google rate limited (HTTP %s)" % status)
             if limited:
                 self._on_limited()   # 다음 _gate 에서 모든 워커가 같이 쉰다 (대기 시간은 공통)
+                if self._consec >= self.pause_after:
+                    raise AutoPause("요청 제한(HTTP %s)이 성공 없이 %d회 연속 — 자동 일시정지" % (status, self._consec))
             elif status in (413, 414):
                 raise PayloadTooLarge("google HTTP %s (요청이 너무 김, %d자)" % (status, len(text)))
             elif status is not None and 400 <= status < 500:

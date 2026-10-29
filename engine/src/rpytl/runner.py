@@ -193,6 +193,12 @@ def run(db_path, game_id, engine="google", opts_json="{}", control=None, local_b
                         continue
                     except Exception as e2:
                         ctl.log("대체 엔진 생성 실패: %s" % e2)
+                if getattr(e, "auto_pause", False):
+                    result["status"] = "paused"
+                    result["message"] = str(e)
+                    ctl.log("자동 일시정지: %s. 끝난 줄은 저장됨. 한참 뒤(또는 와이파이/데이터 전환 후) "
+                            "'번역 이어하기'를 누르고, 그래도 걸리면 설정에서 속도를 더 낮추세요." % e)
+                    break
                 result["status"] = "error"
                 result["message"] = str(e)
                 break
@@ -221,6 +227,6 @@ def run(db_path, game_id, engine="google", opts_json="{}", control=None, local_b
             pass
         con.close()
     ctl.log("번역 %s: 완료 %d, 검수필요 %d, 그대로 %d"
-            % ({"finished": "끝", "stopped": "일시정지", "error": "중단(오류)"}[result["status"]],
+            % ({"finished": "끝", "stopped": "일시정지", "paused": "자동 일시정지(요청 제한)", "error": "중단(오류)"}[result["status"]],
                result["translated"], result["review"], result["copied"]))
     return json.dumps(result, ensure_ascii=False)

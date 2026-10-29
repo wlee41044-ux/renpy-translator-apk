@@ -249,7 +249,14 @@ class TranslateService : Service() {
         }
         try {
             val r = engine.translate(gameId, engineName, opts, control, local)
-            if (r.optString("status") == "error") JobState.log("중단 사유: ${r.optString("message")}")
+            when (r.optString("status")) {
+                "error" -> JobState.log("중단 사유: ${r.optString("message")}")
+                "paused" -> {
+                    // 요청 제한(429)이 연속으로 이어져 자동 일시정지. 대기열의 다음 작업도 같은 제한에 걸리므로 같이 멈춘다.
+                    JobState.stopRequested.set(true)
+                    JobState.log("자동 일시정지: ${r.optString("message")}. 대기 중인 다음 작업도 멈춥니다. 시간이 지난 뒤 다시 시작하세요.")
+                }
+            }
         } finally {
             local?.close()
         }

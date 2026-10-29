@@ -13,8 +13,8 @@ android {
         applicationId = "com.wlee41044.rpytl"
         minSdk = 26
         targetSdk = 36
-        versionCode = 17
-        versionName = "0.9.3"
+        versionCode = 18
+        versionName = "0.9.4"
 
         ndk {
             // 갤럭시 S24 = arm64-v8a 만 (llama.cpp 빌드 시간/APK 크기 절약)

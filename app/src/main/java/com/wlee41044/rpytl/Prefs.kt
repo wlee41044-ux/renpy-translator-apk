@@ -21,18 +21,29 @@ class Prefs(context: Context) {
         get() = sp.getString("target_code", "")!!
         set(v) = sp.edit().putString("target_code", v).apply()
 
+    /**
+     * Google 속도 기본값 = 요청 제한(429)이 가장 덜 걸렸던 v0.8.0 시절 값 (간격 0.5초, 동시 3개, 요청당 25줄).
+     * 이보다 빠르게 올리면 429 가 걸릴 수 있다 (설정 화면에 경고 표시).
+     */
+    companion object {
+        const val DEFAULT_GOOGLE_INTERVAL_MS = 500
+        const val DEFAULT_GOOGLE_WORKERS = 3
+        const val DEFAULT_GOOGLE_BATCH = 25
+    }
+
     /** 요청 시작 사이 최소 간격 (모든 동시 요청 공통). 예전 키(google_delay_ms)와 의미가 달라 키를 바꿈 */
     var googleDelayMs: Int
-        get() = sp.getInt("google_interval_ms", 500)
+        get() = sp.getInt("google_interval_ms", DEFAULT_GOOGLE_INTERVAL_MS)
         set(v) = sp.edit().putInt("google_interval_ms", v).apply()
 
     /** 동시에 보낼 요청 수 (제한이 걸리면 자동으로 줄었다가 안정되면 복구) */
     var googleWorkers: Int
-        get() = sp.getInt("google_workers", 3)
+        get() = sp.getInt("google_workers", DEFAULT_GOOGLE_WORKERS)
         set(v) = sp.edit().putInt("google_workers", v).apply()
 
+    /** 한 요청에 담는 줄 수 */
     var googleBatch: Int
-        get() = sp.getInt("google_batch", 40)
+        get() = sp.getInt("google_batch", DEFAULT_GOOGLE_BATCH)
         set(v) = sp.edit().putInt("google_batch", v).apply()
 
     /** Google 실패 시 로컬 모델로 자동 전환 */
@@ -96,6 +107,11 @@ class Prefs(context: Context) {
     var fontMode: String
         get() = sp.getString("font_mode", "fallback")!!
         set(v) = sp.edit().putString("font_mode", v).apply()
+
+    /** 속도 설정을 기본값(안전한 값)으로 */
+    fun resetGoogleSpeed() {
+        sp.edit().remove("google_interval_ms").remove("google_workers").remove("google_batch").apply()
+    }
 
     fun fontUri(gameId: Long): String? = sp.getString("font_$gameId", null)
     fun setFontUri(gameId: Long, uri: String?) = sp.edit().putString("font_$gameId", uri).apply()

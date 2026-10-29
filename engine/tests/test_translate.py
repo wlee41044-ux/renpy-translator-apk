@@ -482,7 +482,7 @@ def test_post_is_used_for_big_requests_and_falls_back_to_get():
 
     texts = ["가나다라마바사아자차 문장 %d" % i for i in range(30)]
     g = GoogleTranslator(opener=get, post_opener=post_ok, sleeper=lambda s, st: None, delay=0,
-                         workers=1, max_batch=40, max_chars=3000)
+                         workers=1, max_batch=40, max_chars=3000, use_post=True)
     assert g.translate_batch(texts, "ja", "ko") == ["KO(%s)" % t for t in texts]
     assert len(calls["post"]) == 1 and calls["get"] == []       # 한 번에 30줄
     assert "POST" in g.take_report()
@@ -495,7 +495,7 @@ def test_post_is_used_for_big_requests_and_falls_back_to_get():
         return 405, "<title>Method Not Allowed</title>"
 
     g = GoogleTranslator(opener=get, post_opener=post_blocked, sleeper=lambda s, st: None, delay=0,
-                         workers=1, max_batch=40, max_chars=3000, max_encoded=1500)
+                         workers=1, max_batch=40, max_chars=3000, max_encoded=1500, use_post=True)
     assert g.translate_batch(texts, "ja", "ko") == ["KO(%s)" % t for t in texts]
     assert len(calls["post"]) == 1 and len(calls["get"]) >= 2
     assert g._post_ok is False
@@ -517,7 +517,7 @@ def test_413_on_post_lowers_the_limit():
         return 200, gtx_body("\n".join("KO(" + x + ")" for x in q.split("\n")))
 
     g = GoogleTranslator(opener=small_get, post_opener=post, sleeper=lambda s, st: None,
-                         delay=0, workers=1, max_batch=100, max_chars=3000)
+                         delay=0, workers=1, max_batch=100, max_chars=3000, use_post=True)
     out = g.translate_batch(texts, "ja", "ko")
     assert out == ["KO(%s)" % t for t in texts]
     assert g.max_chars < 3000                       # 한도가 낮아져 다음 배치는 처음부터 작게 나눈다
@@ -680,3 +680,61 @@ def test_reset_translations_keeps_copy_lines_and_profiles_and_backs_up(tmp_path)
     # 백업에는 지우기 전 번역이 남아 있다
     old = db.connect(res["backup"])
     assert db.stats(old, gid)["done"] == 2
+
+
+# ---------------------------------------------------------------- 속도 기본값(1.5배 시절) + 자동 일시정지
+
+def test_defaults_are_the_conservative_v080_values():
+    """429 가 가장 덜 걸렸던 v0.8.0(f86598c) 시절 값: 간격 0.5초, 동시 3, 요청당 25줄, GET 4500바이트."""
+    g = GoogleTranslator(opener=lambda u: (200, "[]"))
+    assert (g.delay, g.max_workers, g.max_batch) == (0.5, 3, 25)
+    assert (g.max_encoded, g.max_chars) == (4500, 1800)
+    assert g._post_ok is False                       # POST 는 명시적으로 켰을 때만
+    real = GoogleTranslator()                         # 실제 opener 를 써도 POST 는 기본 꺼짐
+    assert real._post_ok is False and real.pause_after == 3
+
+
+def test_consecutive_429_triggers_auto_pause_after_backoff_steps():
+    from rpytl.translators.google import AutoPause
+    net = FakeNet(responses=[(429, "")] * 50)
+    g, sleeps = make(net, backoff_base=30, pause_after=3)
+    with pytest.raises(AutoPause) as e:
+        g.translate_batch(["hello"], "en", "ko")
+    assert e.value.auto_pause is True and isinstance(e.value, RateLimited)
+    assert sleeps == [30, 60]                       # 1·2번째 사건은 백오프 후 재시도, 3번째에서 멈춘다
+    assert g._consec == 3 and g._interval > 0.5     # 속도도 낮춰졌다
+
+
+def test_success_resets_the_consecutive_counter():
+    net = FakeNet(responses=[(429, ""), None, (429, ""), None, (429, ""), None])
+    g, sleeps = make(net, backoff_base=10, pause_after=2)
+    assert g.translate_batch(["a"], "en", "ko") == ["KO(a)"]
+    assert g.translate_batch(["b"], "en", "ko") == ["KO(b)"]
+    assert g.translate_batch(["c"], "en", "ko") == ["KO(c)"]     # 사이사이 성공했으므로 일시정지 안 함
+    assert g._consec == 0
+
+
+def test_runner_reports_paused_not_error_and_keeps_finished_chunks(game, monkeypatch):
+    dbp, gid = game
+    net = FakeNet(responses=[None] + [(429, "")] * 50)           # 첫 요청 성공, 이후 계속 429
+    t = [0.0]
+
+    def sleeper(sec, stop):                                      # sleep 하면 시간이 그만큼 흐른다
+        t[0] += sec
+
+    monkeypatch.setattr(runner, "create", lambda name, opts, bridge=None: GoogleTranslator(
+        opener=net, sleeper=sleeper, clock=lambda: t[0], delay=0, max_batch=4, workers=1,
+        pause_after=2, backoff_base=1))
+    ctl = Ctl()
+    r = json.loads(runner.run(dbp, gid, "google", "{}", ctl))
+    assert r["status"] == "paused" and "자동 일시정지" in r["message"]
+    con = db.connect(dbp)
+    st = db.stats(con, gid)
+    assert st["done"] == 4 and st["pending"] > 0                 # 끝난 청크(4줄)는 저장, 나머지는 이어하기 대기
+    assert any("자동 일시정지" in m for m in ctl.logs)
+    # 다시 시작하면 남은 줄부터 이어서 한다
+    ok = FakeNet()
+    monkeypatch.setattr(runner, "create", lambda name, opts, bridge=None: GoogleTranslator(
+        opener=ok, sleeper=lambda s, st2: None, delay=0, max_batch=4, workers=1))
+    r2 = json.loads(runner.run(dbp, gid, "google", "{}", Ctl()))
+    assert r2["status"] == "finished" and db.stats(con, gid)["pending"] == 0

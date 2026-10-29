@@ -496,9 +496,38 @@ private fun SettingsPanel(prefs: Prefs) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         TextPref("원문 언어 (Google 코드, auto=자동)", prefs.sourceLang) { prefs.sourceLang = it.ifBlank { "auto" } }
         TextPref("번역 언어 코드 (비우면 tl 언어에서 자동, korean→ko)", prefs.targetCode) { prefs.targetCode = it }
-        IntPref("Google 동시 요청 수 (1~8, 제한 걸리면 자동 감소)", prefs.googleWorkers) { prefs.googleWorkers = it.coerceIn(1, 8) }
-        IntPref("Google 요청 시작 간격 ms (전체 공통, 낮을수록 빠름)", prefs.googleDelayMs) { prefs.googleDelayMs = it.coerceIn(100, 60000) }
-        IntPref("Google 한 요청당 줄 수", prefs.googleBatch) { prefs.googleBatch = it.coerceIn(1, 100) }
+        // ---- Google 번역 속도: 기본값은 요청 제한(429)이 가장 덜 걸렸던 값. 더 빠르게 올리면 경고.
+        var workers by remember { mutableStateOf(prefs.googleWorkers) }
+        var intervalMs by remember { mutableStateOf(prefs.googleDelayMs) }
+        var batch by remember { mutableStateOf(prefs.googleBatch) }
+        var speedTick by remember { mutableStateOf(0) }
+        androidx.compose.runtime.key(speedTick) {
+            IntPref("Google 동시 요청 수 (기본 ${Prefs.DEFAULT_GOOGLE_WORKERS}, 1~8)", workers) {
+                prefs.googleWorkers = it.coerceIn(1, 8); workers = prefs.googleWorkers
+            }
+            IntPref("Google 요청 시작 간격 ms (기본 ${Prefs.DEFAULT_GOOGLE_INTERVAL_MS}, 전체 공통, 낮을수록 빠름)", intervalMs) {
+                prefs.googleDelayMs = it.coerceIn(100, 60000); intervalMs = prefs.googleDelayMs
+            }
+            IntPref("Google 요청당 줄 수 (기본 ${Prefs.DEFAULT_GOOGLE_BATCH}, 클수록 빠름)", batch) {
+                prefs.googleBatch = it.coerceIn(1, 100); batch = prefs.googleBatch
+            }
+        }
+        val faster = workers > Prefs.DEFAULT_GOOGLE_WORKERS || intervalMs < Prefs.DEFAULT_GOOGLE_INTERVAL_MS ||
+            batch > Prefs.DEFAULT_GOOGLE_BATCH
+        if (faster) {
+            Text(
+                "⚠ 기본보다 빠른 설정입니다: Google 요청 제한(429)이 걸릴 수 있습니다. " +
+                    "걸리면 자동으로 느려지고, 성공 없이 3번 연속 걸리면 번역이 자동 일시정지됩니다.",
+                color = Color(0xFFFFB060), fontSize = 12.sp,
+            )
+        }
+        val isDefault = workers == Prefs.DEFAULT_GOOGLE_WORKERS && intervalMs == Prefs.DEFAULT_GOOGLE_INTERVAL_MS &&
+            batch == Prefs.DEFAULT_GOOGLE_BATCH
+        OutlinedButton(enabled = !isDefault, onClick = {
+            prefs.resetGoogleSpeed()
+            workers = prefs.googleWorkers; intervalMs = prefs.googleDelayMs; batch = prefs.googleBatch
+            speedTick++
+        }) { Text("속도를 기본값으로") }
         BoolPref("Google 실패 시 로컬 모델로 전환", prefs.fallbackLocal) { prefs.fallbackLocal = it }
         IntPref("로컬: 배치 크기 (발열 시 줄이기)", prefs.localBatch) { prefs.localBatch = it.coerceIn(1, 32) }
         IntPref("로컬: 쓰레드 수 (발열 시 줄이기)", prefs.localThreads) { prefs.localThreads = it.coerceIn(1, 8) }

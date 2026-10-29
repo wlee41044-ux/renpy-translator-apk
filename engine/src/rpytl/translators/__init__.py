@@ -11,4 +11,7 @@ def create(name, opts, local_bridge=None):
         from .local import LocalTranslator
         return LocalTranslator(local_bridge, **{k: v for k, v in opts.items()
                                                 if k in LocalTranslator.OPTIONS})
+    if name == "gemini":
+        from .gemini import GeminiTranslator
+        return GeminiTranslator(**{k: v for k, v in opts.items() if k in GeminiTranslator.OPTIONS})
     raise ValueError("unknown engine: %r" % name)

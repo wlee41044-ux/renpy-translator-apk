@@ -183,9 +183,23 @@ def review_summary(db_path, game_id):
 
 
 def analyze(db_path, game_id, opts_json, control, bridge=None):
-    """캐릭터 분석 (로컬 모델 필요). 결과는 DB profiles 에 저장."""
+    """캐릭터 분석 (로컬 모델 또는 Gemini). 결과는 DB profiles 에 저장.
+    opts 에 "gemini": {api_key, model, rpm} 가 있고 bridge 가 없으면 Gemini 로 분석한다."""
     from . import analyze as analyzer
+    if bridge is None:
+        g = (json.loads(opts_json or "{}")).get("gemini")
+        if g:
+            from .translators.gemini import GeminiClient
+            bridge = GeminiClient(**{k: v for k, v in g.items() if k in ("api_key", "model", "rpm")})
+            if control is not None:
+                bridge.log = lambda m: control.log(m)
     return analyzer.run(db_path, game_id, bridge, opts_json, control)
+
+
+def gemini_models(api_key):
+    """키 확인 겸 쓸 수 있는 모델 이름 목록 (JSON 배열). 실패하면 예외 메시지에 사유가 있다."""
+    from .translators.gemini import GeminiClient
+    return _j(GeminiClient(api_key=api_key).list_models())
 
 
 def characters(db_path, game_id, min_lines=3):

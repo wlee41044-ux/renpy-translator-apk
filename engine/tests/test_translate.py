@@ -738,3 +738,229 @@ def test_runner_reports_paused_not_error_and_keeps_finished_chunks(game, monkeyp
         opener=ok, sleeper=lambda s, st2: None, delay=0, max_batch=4, workers=1))
     r2 = json.loads(runner.run(dbp, gid, "google", "{}", Ctl()))
     assert r2["status"] == "finished" and db.stats(con, gid)["pending"] == 0
+
+
+# ---------------------------------------------------------------- Gemini 엔진
+
+import re as _re  # noqa: E402
+from rpytl.translators.gemini import GeminiClient, GeminiTranslator, parse_error  # noqa: E402
+from rpytl.translators.google import AutoPause  # noqa: E402
+
+KEY = "test-secret-key-not-real-123"
+
+
+def gem_ok(text):
+    return 200, json.dumps({"candidates": [{"content": {"parts": [{"text": text}]}, "finishReason": "STOP"}]})
+
+
+def gem_err(code, status, message, details=None):
+    return code, json.dumps({"error": {"code": code, "status": status, "message": message,
+                                       "details": details or []}})
+
+
+class FakeGemini:
+    """generateContent 를 흉내: 번호 목록은 'N. KO:<텍스트>' 로 번역해 준다. responses 로 오류를 끼워 넣을 수 있다."""
+
+    def __init__(self, responses=None):
+        self.responses = list(responses or [])
+        self.calls = []
+
+    def __call__(self, url, headers, data):
+        payload = json.loads(data.decode("utf-8")) if data else None
+        self.calls.append((url, headers, payload))
+        if self.responses:
+            r = self.responses.pop(0)
+            if r is not None:
+                return r
+        user = payload["contents"][0]["parts"][0]["text"]
+        rows = [l for l in user.split("\n") if _re.match(r"^\d+\. ", l)]
+        if rows:
+            out = "\n".join("%s. KO:%s" % (l.split(". ", 1)[0], _re.sub(r"^\[[^\]]+\] ", "", l.split(". ", 1)[1]))
+                            for l in rows)
+        else:
+            out = "KO:" + _re.sub(r"^\[[^\]]+\] ", "", user.split("\n")[-1])
+        return gem_ok(out)
+
+
+def gem_client(net, **kw):
+    t, sleeps = [0.0], []
+
+    def sleeper(s, stop):
+        sleeps.append(s)
+        t[0] += s
+
+    kw.setdefault("rpm", 6000)
+    c = GeminiClient(api_key=KEY, opener=net, sleeper=sleeper, clock=lambda: t[0], **kw)
+    c.test_sleeps = sleeps
+    return c
+
+
+def test_gemini_request_format_and_key_only_in_header():
+    net = FakeGemini()
+    c = gem_client(net, model="gemini-flash-latest")
+    assert c.chat("SYS PROMPT", "hello", 777) == "KO:hello"
+    url, headers, payload = net.calls[0]
+    assert url == "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent"
+    assert headers["x-goog-api-key"] == KEY
+    assert KEY not in url and KEY not in json.dumps(payload)           # 키는 헤더에만
+    assert payload["systemInstruction"]["parts"][0]["text"] == "SYS PROMPT"
+    assert payload["contents"] == [{"role": "user", "parts": [{"text": "hello"}]}]
+    assert payload["generationConfig"]["maxOutputTokens"] == 777
+    assert payload["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 0}
+    assert all(s["threshold"] == "BLOCK_NONE" for s in payload["safetySettings"])
+
+
+def test_gemini_empty_key_and_bad_model_name():
+    with pytest.raises(TranslatorError):
+        gem_client(FakeGemini(), model="a/b/../c")
+    c = GeminiClient(api_key="", opener=FakeGemini())
+    with pytest.raises(TranslatorError) as e:
+        c.chat("s", "u")
+    assert "키" in str(e.value)
+
+
+def test_gemini_429_uses_retry_delay_then_succeeds_and_slows_down():
+    info = [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "34s"}]
+    net = FakeGemini([gem_err(429, "RESOURCE_EXHAUSTED", "Quota exceeded", info)])
+    c = gem_client(net, rpm=60)
+    assert c.chat("s", "hi") == "KO:hi"
+    assert 35 in c.test_sleeps                       # retryDelay(34s) + 1
+    assert c._interval > 1.0                         # 이후 요청 간격이 늘어난다 (기본 60/60 = 1초)
+
+
+def test_gemini_daily_quota_pauses_immediately():
+    det = [{"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+            "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}]
+    net = FakeGemini([gem_err(429, "RESOURCE_EXHAUSTED", "Quota exceeded", det)] * 5)
+    c = gem_client(net)
+    with pytest.raises(AutoPause) as e:
+        c.chat("s", "hi")
+    assert "하루 한도" in str(e.value) and len(net.calls) == 1     # 기다려도 소용없으니 바로 멈춘다
+
+
+def test_gemini_consecutive_429_pauses_and_success_resets():
+    net = FakeGemini([gem_err(429, "RESOURCE_EXHAUSTED", "slow down")] * 10)
+    c = gem_client(net, pause_after=3, backoff_base=10)
+    with pytest.raises(AutoPause):
+        c.chat("s", "hi")
+    assert c.test_sleeps[:2] == [10, 20] and c._consec == 3
+    net2 = FakeGemini([gem_err(429, "RESOURCE_EXHAUSTED", "x"), None, gem_err(429, "RESOURCE_EXHAUSTED", "x"), None])
+    c2 = gem_client(net2, pause_after=2, backoff_base=1)
+    assert c2.chat("s", "a") == "KO:a" and c2.chat("s", "b") == "KO:b" and c2._consec == 0
+
+
+def test_gemini_thinking_budget_rejected_falls_back_without_it():
+    net = FakeGemini([gem_err(400, "INVALID_ARGUMENT", "Budget 0 is invalid. This model only works in thinking mode.")])
+    c = gem_client(net)
+    assert c.chat("s", "hi") == "KO:hi"
+    assert "thinkingConfig" in net.calls[0][2]["generationConfig"]
+    assert "thinkingConfig" not in net.calls[1][2]["generationConfig"]
+    c.chat("s", "again")                                              # 한 번 알아낸 뒤로는 계속 빼고 보낸다
+    assert "thinkingConfig" not in net.calls[2][2]["generationConfig"]
+
+
+def test_gemini_errors_are_readable_and_never_contain_the_key():
+    cases = [
+        (gem_err(400, "INVALID_ARGUMENT", "API key not valid. Please pass a valid API key."), "API 키가 올바르지 않"),
+        (gem_err(403, "PERMISSION_DENIED", "User location is not supported"), "접근 거부"),
+        (gem_err(404, "NOT_FOUND", "models/xyz is not found"), "모델을 찾을 수 없"),
+        (gem_err(400, "INVALID_ARGUMENT", "Something else"), "Gemini 오류(400)"),
+    ]
+    for resp, expect in cases:
+        c = gem_client(FakeGemini([resp]))
+        with pytest.raises(TranslatorError) as e:
+            c.chat("s", "hi")
+        assert expect in str(e.value) and KEY not in str(e.value)
+    c = gem_client(FakeGemini([(503, "unavailable")] * 9), max_retries=2)
+    with pytest.raises(TranslatorError):
+        c.chat("s", "hi")
+    assert c.test_sleeps == [2, 4]                                    # 서버 오류는 짧게 백오프 후 포기
+
+
+def test_gemini_blocked_content_returns_empty_so_only_that_line_goes_to_review():
+    blocked = 200, json.dumps({"promptFeedback": {"blockReason": "PROHIBITED_CONTENT"}})
+    logs = []
+    c = gem_client(FakeGemini([blocked]))
+    c.log = logs.append
+    assert c.chat("s", "bad") == "" and any("PROHIBITED_CONTENT" in m for m in logs)
+
+
+def test_gemini_rpm_spacing():
+    net = FakeGemini()
+    c = gem_client(net, rpm=12)                       # 5초 간격
+    for _ in range(3):
+        c.chat("s", "x")
+    assert c.test_sleeps == [5.0, 5.0]
+
+
+def test_gemini_runner_end_to_end_with_speakers_profiles_and_blocked_line(game, monkeypatch):
+    dbp, gid = game
+    con = db.connect(dbp)
+    db.set_profile(con, gid, "Alice", "밝고 활발한 소녀. 반말.", auto=1, lines=9)
+    db.set_profile(con, gid, db.STORY_KEY, "일상 코미디.", auto=1)
+    # 두 번째 요청이 안전 필터에 막히는 경우: 배치 응답이 비어서 한 줄씩 다시 보내고, 막힌 줄만 빈 번역 → 검수필요
+    blocked = 200, json.dumps({"promptFeedback": {"blockReason": "PROHIBITED_CONTENT"}})
+    net = FakeGemini([None, blocked, blocked])       # 1번째 배치 OK, 2번째 배치 차단 → 한 줄씩 → 첫 줄도 차단
+    monkeypatch.setattr(runner, "create", lambda name, opts, bridge=None: GeminiTranslator(
+        client=gem_client(net), max_batch=4))
+    ctl = Ctl()
+    r = json.loads(runner.run(dbp, gid, "gemini", "{}", ctl))
+    assert r["status"] == "finished"
+    st = db.stats(con, gid)
+    assert st["pending"] == 0 and st["done"] + st["review"] == st["total"] and st["review"] >= 1
+    systems = "\n".join(c[2]["systemInstruction"]["parts"][0]["text"] for c in net.calls)
+    users = "\n".join(c[2]["contents"][0]["parts"][0]["text"] for c in net.calls)
+    assert "밝고 활발한 소녀" in systems and "일상 코미디" in systems       # 캐릭터 분석 + 작품 요약
+    assert "[Alice] Good morning" in users and "Previous lines (context only" in users
+    tr = {row["source"]: row["translation"] for row in con.execute("SELECT * FROM texts")}
+    assert tr["It was a quiet morning."].startswith("KO:")
+    assert all(KEY not in m for m in ctl.logs)                          # 로그에 키가 남지 않는다
+
+
+def test_gemini_runner_pauses_on_daily_limit_keeping_finished_work(game, monkeypatch):
+    dbp, gid = game
+    det = [{"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [{"quotaId": "RequestsPerDay"}]}]
+    net = FakeGemini([None, gem_err(429, "RESOURCE_EXHAUSTED", "Quota exceeded", det)])
+    monkeypatch.setattr(runner, "create", lambda name, opts, bridge=None: GeminiTranslator(
+        client=gem_client(net), max_batch=4))
+    ctl = Ctl()
+    r = json.loads(runner.run(dbp, gid, "gemini", "{}", ctl))
+    assert r["status"] == "paused" and "하루 한도" in r["message"]
+    con = db.connect(dbp)
+    assert db.stats(con, gid)["done"] == 4                               # 첫 요청(4줄)은 저장됨
+    assert any("자동 일시정지" in m for m in ctl.logs)
+
+
+def test_gemini_list_models_and_parse_error():
+    body = json.dumps({"models": [
+        {"name": "models/gemini-flash-latest", "supportedGenerationMethods": ["generateContent", "countTokens"]},
+        {"name": "models/text-embedding-004", "supportedGenerationMethods": ["embedContent"]}]})
+    c = GeminiClient(api_key=KEY, opener=lambda url, h, d: (200, body))
+    assert c.list_models() == ["gemini-flash-latest"]
+    c2 = GeminiClient(api_key=KEY, opener=lambda url, h, d: gem_err(400, "INVALID_ARGUMENT", "API key not valid"))
+    with pytest.raises(TranslatorError):
+        c2.list_models()
+    msg, status, retry, per_day = parse_error(json.dumps({"error": {
+        "message": "x", "status": "RESOURCE_EXHAUSTED",
+        "details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "7.5s"}]}}))
+    assert (status, retry, per_day) == ("RESOURCE_EXHAUSTED", 7.5, False)
+    assert parse_error("<html>oops</html>")[1:] == ("", None, False)
+
+
+def test_analyze_can_use_gemini_via_opts(game, monkeypatch):
+    dbp, gid = game
+    seen = []
+
+    def fake_open(self, url, headers, data):
+        seen.append(headers.get("x-goog-api-key"))
+        system = json.loads(data)["systemInstruction"]["parts"][0]["text"]
+        return gem_ok("침착한 성격. 존댓말." if "ONE character" in system else "판타지 모험물.")
+
+    monkeypatch.setattr(GeminiClient, "_urlopen", fake_open)
+    monkeypatch.setattr(GeminiClient, "_gate", lambda self, stop: None)
+    opts = {"min_lines": 2, "gemini": {"api_key": KEY, "model": "gemini-flash-latest", "rpm": 100}}
+    r = json.loads(pipeline.analyze(dbp, gid, json.dumps(opts), Ctl(), None))
+    assert r["status"] == "finished" and r["analyzed"] >= 1
+    assert set(seen) == {KEY}
+    con = db.connect(dbp)
+    assert "침착한 성격" in db.get_profiles(con, gid)["Alice"] and db.STORY_KEY in db.get_profiles(con, gid)

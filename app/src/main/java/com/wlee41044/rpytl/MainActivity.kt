@@ -59,6 +59,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.wlee41044.rpytl.apps.RenpyApps
@@ -334,7 +335,15 @@ private fun MainScreen(engine: Engine, prefs: Prefs) {
                 RadioButton(selected = engineSel == "google", onClick = { engineSel = "google"; prefs.engine = "google" })
                 Text("Google")
                 RadioButton(selected = engineSel == "local", onClick = { engineSel = "local"; prefs.engine = "local" })
-                Text("로컬 모델")
+                Text("로컬")
+                RadioButton(selected = engineSel == "gemini", onClick = { engineSel = "gemini"; prefs.engine = "gemini" })
+                Text("Gemini")
+            }
+            if (engineSel == "gemini") {
+                Text(
+                    "Gemini: 게임 대사가 Google 서버로 전송됩니다. 설정에서 API 키를 입력하세요.",
+                    fontSize = 12.sp, color = Color(0xFFFFB060),
+                )
             }
 
             // ---- 게임별: 언어, 폰트
@@ -363,7 +372,7 @@ private fun MainScreen(engine: Engine, prefs: Prefs) {
                 Text(if (showSettings) "설정 닫기" else "설정 열기")
             }
             if (showSettings) {
-                SettingsPanel(prefs)
+                SettingsPanel(prefs, engine, scope) { ui(it) }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         "모델: " + (prefs.modelPath.substringAfterLast('/').ifBlank { "없음" }),
@@ -492,8 +501,30 @@ private fun MainScreen(engine: Engine, prefs: Prefs) {
 }
 
 @Composable
-private fun SettingsPanel(prefs: Prefs) {
+private fun SettingsPanel(prefs: Prefs, engine: Engine, scope: kotlinx.coroutines.CoroutineScope, log: (String) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        // ---- Gemini API
+        Text("Gemini API", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        var keyText by remember { mutableStateOf(prefs.geminiKey) }
+        OutlinedTextField(
+            value = keyText, onValueChange = { keyText = it; prefs.geminiKey = it }, singleLine = true,
+            label = { Text("API 키 (이 앱 안에만 저장, 화면에 가려짐)", fontSize = 12.sp) },
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        TextPref("모델 이름 (기본 gemini-flash-latest)", prefs.geminiModel) { prefs.geminiModel = it.ifBlank { "gemini-flash-latest" } }
+        IntPref("Gemini 분당 요청 수 (무료 등급은 낮게, 기본 10)", prefs.geminiRpm) { prefs.geminiRpm = it.coerceIn(1, 1000) }
+        IntPref("Gemini 요청당 줄 수 (기본 20)", prefs.geminiBatch) { prefs.geminiBatch = it.coerceIn(1, 60) }
+        OutlinedButton(onClick = {
+            scope.launch {
+                log("Gemini 키 확인/모델 목록 요청 중…")
+                val res = withContext(Dispatchers.IO) { runCatching { engine.geminiModels(prefs.geminiKey) } }
+                res.onSuccess { names ->
+                    log("키 확인 OK. 쓸 수 있는 모델 ${names.size}개: " + names.take(30).joinToString(", "))
+                }.onFailure { log("Gemini 확인 실패: ${it.message}") }
+            }
+        }) { Text("키 확인 / 모델 목록 보기") }
+        HorizontalDivider()
         TextPref("원문 언어 (Google 코드, auto=자동)", prefs.sourceLang) { prefs.sourceLang = it.ifBlank { "auto" } }
         TextPref("번역 언어 코드 (비우면 tl 언어에서 자동, korean→ko)", prefs.targetCode) { prefs.targetCode = it }
         // ---- Google 번역 속도: 기본값은 요청 제한(429)이 가장 덜 걸렸던 값. 더 빠르게 올리면 경고.

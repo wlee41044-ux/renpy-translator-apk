@@ -108,6 +108,29 @@ class Prefs(context: Context) {
         get() = sp.getString("font_mode", "fallback")!!
         set(v) = sp.edit().putString("font_mode", v).apply()
 
+    // ---- Gemini API (엔진 "gemini"). 키는 이 앱 전용 저장소에만 저장되고 로그/URL 에 남지 않는다.
+    var geminiKey: String
+        get() = sp.getString("gemini_key", "")!!
+        set(v) = sp.edit().putString("gemini_key", v.trim()).apply()
+
+    /** 모델 이름. gemini-flash-latest 는 Flash 계열 최신을 가리키는 별칭 */
+    var geminiModel: String
+        get() = sp.getString("gemini_model", "gemini-flash-latest")!!
+        set(v) = sp.edit().putString("gemini_model", v.trim()).apply()
+
+    /** 분당 요청 수 상한 (무료 등급은 낮다. 429 가 나면 앱이 알아서 더 늦춘다) */
+    var geminiRpm: Int
+        get() = sp.getInt("gemini_rpm", 10)
+        set(v) = sp.edit().putInt("gemini_rpm", v).apply()
+
+    /** 한 요청에 담는 줄 수 (크게 하면 하루 요청 한도를 아끼지만 번호 목록이 어긋날 수 있다) */
+    var geminiBatch: Int
+        get() = sp.getInt("gemini_batch", 20)
+        set(v) = sp.edit().putInt("gemini_batch", v).apply()
+
+    fun geminiOpts(): JSONObject = JSONObject()
+        .put("api_key", geminiKey).put("model", geminiModel).put("rpm", geminiRpm)
+
     /** 속도 설정을 기본값(안전한 값)으로 */
     fun resetGoogleSpeed() {
         sp.edit().remove("google_interval_ms").remove("google_workers").remove("google_batch").apply()
@@ -128,5 +151,6 @@ class Prefs(context: Context) {
                 .put("workers", googleWorkers),
         )
         put("local", JSONObject().put("max_batch", localBatch).put("cooldown", localCooldownMs / 1000.0))
+        if (engine == "gemini") put("gemini", geminiOpts().put("max_batch", geminiBatch))
     }
 }

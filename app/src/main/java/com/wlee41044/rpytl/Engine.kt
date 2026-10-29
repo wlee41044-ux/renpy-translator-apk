@@ -81,6 +81,12 @@ class Engine(context: Context) {
     fun analyze(gameId: Long, opts: JSONObject, control: PyControl, localBridge: Any?): JSONObject =
         JSONObject(py.callAttr("analyze", dbPath, gameId, opts.toString(), control, localBridge).toString())
 
+    /** 키 확인 겸 쓸 수 있는 Gemini 모델 이름 목록. 실패하면 예외 (메시지에 사유). */
+    fun geminiModels(apiKey: String): List<String> {
+        val arr = JSONArray(py.callAttr("gemini_models", apiKey).toString())
+        return (0 until arr.length()).map { arr.getString(it) }
+    }
+
     fun characters(gameId: Long): JSONArray = JSONArray(py.callAttr("characters", dbPath, gameId).toString())
 
     fun setProfile(gameId: Long, name: String, profile: String) {

@@ -211,9 +211,14 @@ class TranslateService : Service() {
     /** 캐릭터 분석 (로컬 모델). 끝까지 갔으면 true. */
     private fun analyze(gameId: Long): Boolean {
         updateNotification("캐릭터 분석 중", 0, 0)
-        val local = LocalLlm.create(this, prefs) { JobState.log(it) }
-        if (local == null) {
-            JobState.log("캐릭터 분석에는 로컬 모델이 필요합니다. 설정에서 GGUF 모델을 먼저 지정하세요.")
+        val useGemini = prefs.engine == "gemini"
+        val local = if (useGemini) null else LocalLlm.create(this, prefs) { JobState.log(it) }
+        if (!useGemini && local == null) {
+            JobState.log("캐릭터 분석에는 로컬 모델 또는 Gemini 가 필요합니다. 설정에서 GGUF 모델을 지정하거나 엔진을 Gemini 로 하세요.")
+            return false
+        }
+        if (useGemini && prefs.geminiKey.isBlank()) {
+            JobState.log("Gemini API 키가 비어 있습니다 (설정에서 입력하세요)")
             return false
         }
         val control = object : PyControl {
@@ -224,17 +229,24 @@ class TranslateService : Service() {
             }
         }
         return try {
-            val r = engine.analyze(gameId, JSONObject().put("min_lines", 5).put("max_characters", 40), control, local)
+            val opts = JSONObject().put("min_lines", 5).put("max_characters", 40)
+            if (useGemini) opts.put("gemini", prefs.geminiOpts())
+            val r = engine.analyze(gameId, opts, control, local)
             if (r.optString("status") == "error") JobState.log("중단 사유: ${r.optString("message")}")
             JobState.dbChanged()
             r.optString("status") == "finished"
         } finally {
-            local.close()
+            local?.close()
         }
     }
 
     private fun translate(gameId: Long, name: String, retryReview: Boolean, forceLocal: Boolean = false) {
-        val engineName = if (forceLocal) "local" else prefs.engine
+        // "분석 후 번역(밤새)" 은 로컬 모델로 번역하되, 엔진이 Gemini 로 선택돼 있으면 Gemini 로 한다
+        val engineName = if (forceLocal && prefs.engine != "gemini") "local" else prefs.engine
+        if (engineName == "gemini" && prefs.geminiKey.isBlank()) {
+            JobState.log("Gemini API 키가 비어 있습니다 (설정에서 입력하세요)")
+            return
+        }
         val opts = prefs.translateOpts(engineName, retryReview)
         val needLocal = engineName == "local" || opts.has("fallback")
         val local = if (needLocal) LocalLlm.create(this, prefs) { JobState.log(it) } else null

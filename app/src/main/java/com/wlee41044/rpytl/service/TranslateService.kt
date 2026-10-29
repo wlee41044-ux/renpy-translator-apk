@@ -212,7 +212,7 @@ class TranslateService : Service() {
     /** 캐릭터 분석 (로컬 모델). 끝까지 갔으면 true. */
     private fun analyze(gameId: Long): Boolean {
         updateNotification("캐릭터 분석 중", 0, 0)
-        val useGemini = prefs.engine == "gemini"
+        val useGemini = prefs.engine == "gemini" || prefs.engine == "hybrid"
         val local = if (useGemini) null else LocalLlm.create(this, prefs) { JobState.log(it) }
         if (!useGemini && local == null) {
             JobState.log("캐릭터 분석에는 로컬 모델 또는 Gemini 가 필요합니다. 설정에서 GGUF 모델을 지정하거나 엔진을 Gemini 로 하세요.")
@@ -246,7 +246,11 @@ class TranslateService : Service() {
 
     private fun translate(gameId: Long, name: String, retryReview: Boolean, forceLocal: Boolean = false) {
         // "분석 후 번역(밤새)" 은 로컬 모델로 번역하되, 엔진이 Gemini 로 선택돼 있으면 Gemini 로 한다
-        val engineName = if (forceLocal && prefs.engine != "gemini") "local" else prefs.engine
+        if (prefs.engine == "hybrid") {
+            translateHybrid(gameId, retryReview)
+            return
+        }
+        val engineName = if (forceLocal && prefs.engine == "google") "local" else prefs.engine
         if (engineName == "gemini" && prefs.geminiKey.isBlank()) {
             JobState.log("Gemini API 키가 비어 있습니다 (설정에서 입력하세요)")
             return
@@ -271,6 +275,50 @@ class TranslateService : Service() {
             }
         } finally {
             local?.close()
+        }
+    }
+
+    /**
+     * 역할 분담 번역: 대사는 Gemini, 대사가 아닌 것(아이템 설명, 상태창 글자 등)은 Google 이 동시에 맡는다.
+     * 서로 다른 줄을 담당하므로 겹치지 않고, 한쪽이 한도로 멈춰도 다른 쪽은 계속 간다.
+     */
+    private fun translateHybrid(gameId: Long, retryReview: Boolean) {
+        if (prefs.geminiKey.isBlank()) {
+            JobState.log("Gemini API 키가 비어 있습니다 (설정에서 입력하세요)")
+            return
+        }
+        if (retryReview) engine.resetReview(gameId)   // 두 역할이 각자 되돌리면 서로 방해하므로 여기서 한 번만
+        val control = object : PyControl {
+            override fun isStopped(): Boolean = JobState.stopRequested.get()
+            override fun log(msg: String) = JobState.log(msg)
+            override fun progress(done: Int, total: Int) {
+                JobState.setProgress(gameId, done, total)
+                JobState.dbChanged()
+                updateNotification("혼합 번역 중", done, total)
+            }
+        }
+        val geminiOpts = prefs.translateOpts("gemini", false).put("only", "dialogue")
+        val googleOpts = prefs.translateOpts("google", false).put("only", "other").also { it.remove("fallback") }
+        var googleResult: JSONObject? = null
+        val googleThread = Thread {
+            try {
+                googleResult = engine.translate(gameId, "google", googleOpts, control, null)
+            } catch (t: Throwable) {
+                JobState.log("Google 담당 오류: ${t.javaClass.simpleName}: ${t.message}")
+            }
+        }.apply { name = "rpytl-google"; start() }
+        var geminiResult: JSONObject? = null
+        try {
+            geminiResult = engine.translate(gameId, "gemini", geminiOpts, control, null)
+        } finally {
+            googleThread.join()
+        }
+        for ((role, res) in listOf("Gemini(대사)" to geminiResult, "Google(그 외)" to googleResult)) {
+            val r = res ?: continue
+            when (r.optString("status")) {
+                "error" -> JobState.log("$role 중단 사유: ${r.optString("message")}")
+                "paused" -> { JobState.log("$role 자동 일시정지"); onPaused(r) }
+            }
         }
     }
 

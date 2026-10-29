@@ -65,6 +65,7 @@ def run(db_path, game_id, engine="google", opts_json="{}", control=None, local_b
     source_lang = opts.get("source_lang") or "auto"
     target_lang = opts.get("target_code") or lang_code(game["language"])
     batch_size = int(opts.get("batch_size") or 0)
+    only = opts.get("only")   # 역할 분담: "dialogue" = 대사만, "other" = 대사가 아닌 것(아이템 설명, 상태창 글자 등)
     fallback = opts.get("fallback")  # 예: "local"
 
     engines = [engine] + ([fallback] if fallback and fallback != engine else [])
@@ -105,7 +106,15 @@ def run(db_path, game_id, engine="google", opts_json="{}", control=None, local_b
     if opts.get("retry_review"):
         db.reset_status(con, game_id, db.REVIEW)
 
-    ctl.log("번역 시작: 엔진=%s, %s → %s" % (tr.name, source_lang, target_lang))
+    ctl.log("번역 시작: 엔진=%s%s, %s → %s" % (tr.name, {"dialogue": " (대사 담당)", "other": " (대사 외 담당)"}.get(only, ""),
+                                           source_lang, target_lang))
+
+    def report(done_local):
+        if only:      # 두 역할이 동시에 돌므로 화면 진행률은 DB 기준 (상대 역할이 끝낸 줄 포함)
+            st2 = db.stats(con, game_id)
+            ctl.progress(st2[db.DONE], st2["total"])
+        else:
+            ctl.progress(done_local, total)
 
     def save_results(todo, masks, outs):
         """outs[i] 가 None 이면(못 한 줄) 대기 상태로 남긴다. 반환: 완료로 저장된 줄 수"""
@@ -133,8 +142,11 @@ def run(db_path, game_id, engine="google", opts_json="{}", control=None, local_b
     try:
         st = db.stats(con, game_id)
         done, total = st[db.DONE], st["total"]
-        ctl.progress(done, total)
+        report(done)
         rows = db.pending_all(con, game_id)      # 배치마다 DB 를 다시 훑지 않는다
+        if only:
+            # 같은 원문이 대사로도 쓰이면 대사 담당이 번역한다 (두 역할이 같은 줄을 중복 번역하지 않게)
+            rows = [r for r in rows if bool(r["has_dialogue"]) == (only == "dialogue")]
         pos = 0
         while pos < len(rows):
             if ctl.stopped():
@@ -160,7 +172,7 @@ def run(db_path, game_id, engine="google", opts_json="{}", control=None, local_b
             done += copied
             if not todo:
                 pos += len(batch)
-                ctl.progress(done, total)
+                report(done)
                 continue
 
             t0 = time.monotonic()
@@ -172,7 +184,7 @@ def run(db_path, game_id, engine="google", opts_json="{}", control=None, local_b
                 part = getattr(e, "partial", None)
                 if part:
                     done += save_results(todo, masks, part)
-                    ctl.progress(done, total)
+                    report(done)
                 result["status"] = "stopped"
                 break
             except (RateLimited, TranslatorError) as e:
@@ -180,7 +192,7 @@ def run(db_path, game_id, engine="google", opts_json="{}", control=None, local_b
                 if part:
                     saved = save_results(todo, masks, part)      # 이미 성공한 청크는 버리지 않는다
                     done += saved
-                    ctl.progress(done, total)
+                    report(done)
                     if saved:
                         ctl.log("실패 전에 끝난 %d줄은 저장" % saved)
                 ctl.log("엔진 실패: %s" % e)
@@ -214,7 +226,7 @@ def run(db_path, game_id, engine="google", opts_json="{}", control=None, local_b
             db_time += time.monotonic() - t_db
             pos += len(batch)
             done += ok
-            ctl.progress(done, total)
+            report(done)
             rep = tr.take_report()
             ctl.log("%d줄 %.1fs (%.0f줄/초)%s · DB %.1fs · 검수필요 누적 %d"
                     % (len(todo), net_time + db_time, len(todo) / max(0.001, net_time + db_time),

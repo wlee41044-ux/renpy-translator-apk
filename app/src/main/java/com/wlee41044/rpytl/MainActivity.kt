@@ -339,7 +339,11 @@ private fun MainScreen(engine: Engine, prefs: Prefs) {
                 RadioButton(selected = engineSel == "gemini", onClick = { engineSel = "gemini"; prefs.engine = "gemini" })
                 Text("Gemini")
             }
-            if (engineSel == "gemini") {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(selected = engineSel == "hybrid", onClick = { engineSel = "hybrid"; prefs.engine = "hybrid" })
+                Text("혼합: 대사 = Gemini, 나머지(아이템 설명·UI 글자) = Google, 동시에")
+            }
+            if (engineSel == "gemini" || engineSel == "hybrid") {
                 Text(
                     "Gemini: 게임 대사가 Google 서버로 전송됩니다. 설정에서 API 키를 입력하세요.",
                     fontSize = 12.sp, color = Color(0xFFFFB060),

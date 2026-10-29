@@ -980,3 +980,41 @@ def test_gemini_daily_quota_marks_per_day_and_analyze_pauses(game, monkeypatch):
     opts = {"min_lines": 2, "gemini": {"api_key": KEY, "rpm": 100}}
     r = json.loads(pipeline.analyze(dbp, gid, json.dumps(opts), Ctl(), None))
     assert r["status"] == "paused" and r["per_day"] is True
+
+
+def test_roles_split_dialogue_to_one_engine_and_other_strings_to_another_concurrently(game, monkeypatch):
+    import threading
+    from rpytl import translators
+    dbp, gid = game
+    con = db.connect(dbp)
+    kinds = {r["src_hash"]: r["kind"] for r in con.execute("SELECT src_hash, kind FROM entries WHERE active = 1")}
+    assert {"dialogue", "string"} <= set(kinds.values())     # 픽스처에 두 종류가 다 있어야 의미가 있다
+
+    class FakeDialogueEngine(GoogleTranslator):
+        name = "gemini"
+
+    gnet = FakeNet(fn=lambda s: "G:" + s)
+    dnet = FakeNet(fn=lambda s: "D:" + s)
+
+    def create(name, opts, bridge=None):
+        cls, net = (FakeDialogueEngine, dnet) if name == "gemini" else (GoogleTranslator, gnet)
+        return cls(opener=net, sleeper=lambda s, stop: None, delay=0, max_batch=4, workers=1)
+    monkeypatch.setattr(runner, "create", create)
+
+    results = {}
+
+    def go(engine, only):
+        results[only] = json.loads(runner.run(dbp, gid, engine, json.dumps({"only": only}), Ctl()))
+    ts = [threading.Thread(target=go, args=("gemini", "dialogue")), threading.Thread(target=go, args=("google", "other"))]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert results["dialogue"]["status"] == results["other"]["status"] == "finished"
+    s = db.stats(db.connect(dbp), gid)
+    assert s["done"] == s["total"] and s["remaining"] == 0
+    for row in db.connect(dbp).execute("SELECT src_hash, engine, translation FROM texts WHERE status = 'done'"):
+        has_dlg = row["src_hash"] in {h for h, k in kinds.items() if k == "dialogue"} or any(
+            r["kind"] == "dialogue" for r in db.connect(dbp).execute(
+                "SELECT kind FROM entries WHERE game_id = ? AND src_hash = ? AND active = 1", (gid, row["src_hash"])))
+        if row["engine"] == "copy":
+            continue
+        assert row["engine"] == ("gemini" if has_dlg else "google"), row["engine"]

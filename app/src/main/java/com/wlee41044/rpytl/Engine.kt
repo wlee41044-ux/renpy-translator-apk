@@ -93,6 +93,11 @@ class Engine(context: Context) {
         py.callAttr("set_profile", dbPath, gameId, name, profile)
     }
 
+    /** 검수필요 줄을 다시 번역 대기로 (역할 분담 번역을 시작하기 전에 한 번만) */
+    fun resetReview(gameId: Long) {
+        py.callAttr("reset_review", dbPath, gameId)
+    }
+
     fun reviewSummary(gameId: Long): JSONArray = JSONArray(py.callAttr("review_summary", dbPath, gameId).toString())
 
     fun reviewList(gameId: Long): JSONArray = JSONArray(py.callAttr("review_list", dbPath, gameId, 200).toString())

@@ -149,6 +149,15 @@ def translate(db_path, game_id, engine, opts_json, control, local_bridge=None):
     return runner.run(db_path, game_id, engine, opts_json, control, local_bridge)
 
 
+def reset_review(db_path, game_id):
+    """검수필요 줄을 다시 번역 대기로 (역할 분담 번역을 시작하기 전에 한 번만 한다)."""
+    con = open_db(db_path)
+    try:
+        db.reset_status(con, game_id, db.REVIEW)
+    finally:
+        con.close()
+
+
 def backup_db(db_path, keep=3):
     """작업 시작 전 번역 기록 DB 를 backup/ 에 복사 (sqlite backup API: WAL 이 있어도 일관됨).
     최근 keep 개만 남긴다. 반환: 백업 파일 경로 또는 빈 문자열."""

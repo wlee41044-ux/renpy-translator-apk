@@ -69,7 +69,7 @@ class GeminiClient:
     """한 번의 chat() = generateContent 요청 하나. 한도 지키기, 재시도, 오류 분류를 맡는다."""
 
     def __init__(self, api_key="", model=DEFAULT_MODEL, rpm=10, temperature=0.2, max_tokens=4096,
-                 timeout=90, max_retries=5, pause_after=3, backoff_base=30.0, backoff_max=300.0,
+                 timeout=45, max_retries=3, pause_after=3, backoff_base=30.0, backoff_max=300.0,
                  thinking=False, opener=None, clock=time.monotonic, sleeper=None):
         self.api_key = (api_key or "").strip()
         self.model = _model_path(model)
@@ -197,6 +197,10 @@ class GeminiClient:
                 raise TranslatorError("Gemini 오류(%s): %s" % (status, msg or st))
             attempt += 1
             if attempt > self.max_retries:
+                if status is None and "timed out" in (body or ""):
+                    raise TranslatorError(
+                        "Gemini 가 %d회 연속 응답하지 않습니다 (시간 초과). 설정의 모델 이름을 '모델 목록 보기'에 나온 "
+                        "고정 이름(예: gemini-2.5-flash 처럼 -latest 가 없는 것)으로 바꾸거나 네트워크를 바꿔 보세요" % attempt)
                 raise TranslatorError("Gemini 서버 오류가 계속됨 (%s %s)" % (status, msg or (body or "")[:80]))
             wait = min(60.0, 2.0 * 2 ** (attempt - 1))
             self.log("Gemini 오류(%s). %d초 후 재시도 (%d/%d)" % (status if status else (body or "")[:60], wait,

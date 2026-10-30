@@ -302,6 +302,9 @@ private fun MainScreen(engine: Engine, prefs: Prefs) {
                 Button(onClick = { TranslateService.start(ctx, TranslateService.ACTION_EXPORT, gid) }) {
                     Text("출력 파일 생성")
                 }
+                OutlinedButton(enabled = !busy, onClick = {
+                    TranslateService.start(ctx, TranslateService.ACTION_UNAPPLY, gid)
+                }) { Text("번역 적용 해제(게임 복구)") }
                 OutlinedButton(onClick = {
                     TranslateService.start(ctx, TranslateService.ACTION_ANALYZE, gid)
                 }) { Text("캐릭터 분석") }

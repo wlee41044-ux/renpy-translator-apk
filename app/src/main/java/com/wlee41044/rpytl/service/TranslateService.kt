@@ -40,6 +40,7 @@ class TranslateService : Service() {
         const val ACTION_SCAN = "scan"
         const val ACTION_TRANSLATE = "translate"
         const val ACTION_EXPORT = "export"
+        const val ACTION_UNAPPLY = "unapply"
         const val ACTION_ANALYZE = "analyze"
         const val ACTION_ANALYZE_TRANSLATE = "analyze_translate"
         const val ACTION_PAUSE = "pause"
@@ -155,7 +156,7 @@ class TranslateService : Service() {
     private fun runJob(action: String, gameId: Long, retryReview: Boolean) {
         val game = gameInfo(gameId)
         JobState.setRunning(JobState.Running(gameId, action))
-        if (action != ACTION_EXPORT) engine.backup()   // 번역 기록 보호 (최근 3개 보관)
+        if (action != ACTION_EXPORT && action != ACTION_UNAPPLY) engine.backup()   // 번역 기록 보호 (최근 3개 보관)
         acquireWakeLock()
         QuotaReset.cancel(this)   // 직접 다시 시작했으면 예약된 한도 초기화 알림은 필요 없다
         try {
@@ -168,6 +169,7 @@ class TranslateService : Service() {
                     if (analyze(game.id)) translate(game.id, game.name, retryReview, forceLocal = true)
                 }
                 ACTION_EXPORT -> export(game.id, game.folderUri, game.language)
+                ACTION_UNAPPLY -> unapply(game.folderUri, game.language)
             }
         } finally {
             releaseWakeLock()
@@ -407,6 +409,21 @@ class TranslateService : Service() {
                 ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
         }.getOrNull() ?: ""
         return if (display.lowercase().endsWith(".otf")) "otf" else "ttf"
+    }
+
+    /** 게임에 넣은 번역 파일을 지워 번역 적용을 해제한다 (번역 기록 DB 는 그대로). 설치된 앱 게임만 지원. */
+    private fun unapply(location: String, language: String) {
+        if (!location.startsWith(APK_PREFIX)) {
+            JobState.log("번역 적용 해제는 설치된 앱 게임만 지원합니다. 폴더 게임은 game/tl/$language/rpytl 폴더를 직접 지우세요.")
+            return
+        }
+        val st = ShizukuFs.status()
+        if (st != ShizukuFs.Status.READY) {
+            JobState.log("해제 실패: ${st.label}. Shizuku 를 켜고 권한을 허용한 뒤 다시 시도하세요.")
+            return
+        }
+        val n = AppGame(this, location.removePrefix(APK_PREFIX)).removeOutput(language) { JobState.log(it) }
+        JobState.log("번역 적용 해제: 파일 ${n}개 삭제. 게임을 완전히 종료 후 다시 실행하세요. (번역 기록은 앱에 그대로 남아 있습니다)")
     }
 
     private fun exportToApp(gameId: Long, pkg: String, language: String) {

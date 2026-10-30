@@ -88,4 +88,19 @@ class AppGame(private val context: Context, val pkg: String) {
         }
         return rels.size
     }
+
+    /** 이 앱이 넣은 번역(game/tl/<lang>/rpytl/)을 전부 지운다. 게임 원본 파일은 건드리지 않는다. 반환: 지운 파일 수 */
+    fun removeOutput(language: String, log: (String) -> Unit): Int {
+        val fs = ShizukuFs.get()
+        val base = "${ShizukuFs.gameDir(pkg)}/tl/$language/rpytl"
+        if (!fs.exists(base)) return 0
+        val existing = JSONArray(fs.list(base))
+        var n = 0
+        for (i in 0 until existing.length()) {
+            val rel = existing.getJSONObject(i).getString("p")
+            if (fs.remove("$base/$rel")) n++ else log("삭제 실패: $rel")
+        }
+        fs.remove(base)   // 비었으면 폴더도 지운다 (안 비었으면 그냥 남는다)
+        return n
+    }
 }
